@@ -185,7 +185,54 @@ async fn connect_and_run(
         url_str.to_string()
     };
 
-    let mut req = Request::get(&ws_url);
+    // In gated mode, authenticate via POST /auth/password-login to obtain session access token
+    let mut final_ws_url = ws_url.clone();
+    if let (Some(u), Some(p)) = (auth_user, auth_pass) {
+        if !u.is_empty() && !p.is_empty() {
+            let http_base = if url_str.starts_with("wss://") {
+                format!("https://{}", &url_str[6..].trim_end_matches('/'))
+            } else if url_str.starts_with("ws://") {
+                format!("http://{}", &url_str[5..].trim_end_matches('/'))
+            } else if url_str.starts_with("http://") || url_str.starts_with("https://") {
+                url_str.trim_end_matches('/').to_string()
+            } else {
+                format!("http://{}", url_str.trim_end_matches('/'))
+            };
+
+            let login_url = format!("{http_base}/auth/password-login");
+            let http_client = reqwest::Client::builder()
+                .timeout(Duration::from_secs(10))
+                .build()?;
+            let body = json!({
+                "provider": "basic",
+                "username": u,
+                "password": p
+            });
+
+            if let Ok(resp) = http_client.post(&login_url).json(&body).send().await {
+                if resp.status().is_success() {
+                    for cookie in resp.headers().get_all(reqwest::header::SET_COOKIE) {
+                        if let Ok(cookie_str) = cookie.to_str() {
+                            if let Some(pos) = cookie_str.find("hermes_session_at=") {
+                                let rest = &cookie_str[pos + 18..];
+                                let token_raw = rest.split(';').next().unwrap_or("").trim().trim_matches('"');
+                                if !token_raw.is_empty() {
+                                    final_ws_url = if final_ws_url.contains('?') {
+                                        format!("{final_ws_url}&token={token_raw}")
+                                    } else {
+                                        format!("{final_ws_url}?token={token_raw}")
+                                    };
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    let mut req = Request::get(&final_ws_url);
     if let (Some(u), Some(p)) = (auth_user, auth_pass) {
         if !u.is_empty() {
             use std::io::Write;
