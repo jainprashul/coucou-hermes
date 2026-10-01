@@ -77,6 +77,14 @@ function parseGatewayFrame(frame: Record<string, unknown>): {
   let eventName = "";
   if (frame.method === "event" && typeof params.type === "string") {
     eventName = params.type;
+  } else if (frame.method === "server_request") {
+    // Spec shape: method server_request + params.type ∈ {approval, clarify, …}
+    if (typeof params.type === "string") eventName = params.type;
+    else if (typeof params.method === "string") eventName = params.method;
+    else if (typeof params.request === "string") eventName = params.request;
+    // Map bare kinds onto the .request event names handled below.
+    if (eventName === "approval") eventName = "approval.request";
+    if (eventName === "clarify") eventName = "clarify.request";
   } else if (typeof frame.event === "string") {
     eventName = frame.event;
   } else if (typeof frame.method === "string" && frame.method.includes(".")) {
@@ -84,6 +92,15 @@ function parseGatewayFrame(frame: Record<string, unknown>): {
   }
 
   return { eventName, params, payload };
+}
+
+let lastUnknownLogAt = 0;
+function logUnknownEvent(eventName: string, frame: Record<string, unknown>) {
+  const now = Date.now();
+  if (now - lastUnknownLogAt < 2000) return;
+  lastUnknownLogAt = now;
+  const method = typeof frame.method === "string" ? frame.method : "?";
+  void Bridge.log(`hermes unknown event name=${eventName || "(empty)"} method=${method}`);
 }
 
 export function registerHermesHandlers(island: Island) {
@@ -120,6 +137,10 @@ export function registerHermesHandlers(island: Island) {
 }
 
 function surfaceView(island: Island, view: Parameters<Island["alert"]>[0], isAlert: boolean) {
+  // Keep FSM pin in sync so auto-close cannot dismiss approval/clarify.
+  if (isAlert && State.isPinned) {
+    island.pinForAlert();
+  }
   if (State.mode === "expanded") {
     if (isAlert) island.setView(view);
   } else if (isAlert) {
@@ -275,6 +296,10 @@ function handleHermesEvent(island: Island, frame: Record<string, unknown>) {
     }
 
     default:
+      if (eventName) logUnknownEvent(eventName, frame);
+      else if (frame.method && frame.method !== "gateway.ping") {
+        logUnknownEvent("", frame);
+      }
       break;
   }
 

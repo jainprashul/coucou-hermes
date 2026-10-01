@@ -74,8 +74,11 @@ export const Bridge = {
     call<boolean>("hermes_decide", { requestId, choice }),
   hermesClarifyAnswer: (requestId: string, answers: Record<string, unknown>) =>
     call<boolean>("hermes_clarify_answer", { requestId, answers }),
-  hermesChatSend: (prompt: string) =>
-    callOrThrow<{ text: string }>("hermes_chat_send", { prompt }),
+  hermesChatSend: (prompt: string, context?: { name: string; path?: string } | null) =>
+    callOrThrow<{ text: string }>("hermes_chat_send", {
+      prompt,
+      context: context ?? null,
+    }),
   hermesChatReset: () => call<void>("hermes_chat_reset"),
 
   // ── Claude Code hooks (legacy fallback) ───────────────────────────────────

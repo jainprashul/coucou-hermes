@@ -1,13 +1,15 @@
 // Hermes HTTP API Client (:8642/v1)
 //
 // Interacts with Hermes Agent OpenAI-compatible HTTP API server:
-//   - POST /v1/chat/completions with streaming SSE
-//   - GET /v1/capabilities
-//   - Run control & direct execution
+//   - POST /v1/chat/completions (non-streaming for Phase A)
+//   - Optional file path / small-text attach in the user prompt
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use std::path::Path;
 use std::sync::Mutex;
+
+const MAX_ATTACH_BYTES: u64 = 32 * 1024;
 
 #[derive(Default)]
 pub struct HermesChatSession {
@@ -34,11 +36,69 @@ pub struct ChatReply {
     pub text: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatFileContext {
+    pub name: String,
+    pub path: Option<String>,
+}
+
+/// Build the user message, optionally appending file path + small text content.
+pub fn build_prompt_with_context(prompt: &str, context: Option<&ChatFileContext>) -> String {
+    let Some(ctx) = context else {
+        return prompt.to_string();
+    };
+    if ctx.name.is_empty() && ctx.path.as_ref().map(|p| p.is_empty()).unwrap_or(true) {
+        return prompt.to_string();
+    }
+
+    let mut out = String::from(prompt);
+    out.push_str("\n\n[Attached file: ");
+    out.push_str(if ctx.name.is_empty() { "file" } else { &ctx.name });
+    out.push(']');
+    if let Some(path) = ctx.path.as_ref().filter(|p| !p.is_empty()) {
+        out.push_str("\nPath: ");
+        out.push_str(path);
+
+        if let Some(snippet) = read_small_text_attach(path) {
+            out.push_str("\n--- file contents ---\n");
+            out.push_str(&snippet);
+            if !snippet.ends_with('\n') {
+                out.push('\n');
+            }
+            out.push_str("--- end ---");
+        }
+    }
+    out
+}
+
+fn read_small_text_attach(path: &str) -> Option<String> {
+    let p = Path::new(path);
+    let meta = std::fs::metadata(p).ok()?;
+    if !meta.is_file() || meta.len() > MAX_ATTACH_BYTES {
+        return None;
+    }
+    let bytes = std::fs::read(p).ok()?;
+    // Reject obviously binary payloads (NUL in first 512 bytes).
+    let probe = &bytes[..bytes.len().min(512)];
+    if probe.contains(&0) {
+        return None;
+    }
+    let text = String::from_utf8_lossy(&bytes);
+    // Also skip if too many replacement chars (high binary ratio).
+    let bad = text.chars().filter(|c| *c == '\u{FFFD}').count();
+    if bad > 8 {
+        return None;
+    }
+    Some(text.into_owned())
+}
+
 pub async fn chat_send(
     chat: &HermesChatSession,
     api_url: &str,
     api_key: Option<&str>,
     prompt: String,
+    context: Option<ChatFileContext>,
 ) -> Result<ChatReply, String> {
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(120))
@@ -52,9 +112,11 @@ pub async fn chat_send(
         format!("{base}/v1/chat/completions")
     };
 
+    let content = build_prompt_with_context(&prompt, context.as_ref());
+
     chat.push(json!({
         "role": "user",
-        "content": prompt
+        "content": content
     }));
 
     let body = json!({
@@ -64,11 +126,13 @@ pub async fn chat_send(
     });
 
     let mut req = client.post(&endpoint).json(&body);
-    if let Some(key) = api_key {
-        if !key.is_empty() {
-            req = req.header("Authorization", format!("Bearer {key}"));
-        }
-    }
+    let Some(key) = api_key.filter(|k| !k.is_empty()) else {
+        return Err(
+            "Hermes API key missing. Set Hermes API key (or gateway password) in Settings."
+                .to_string(),
+        );
+    };
+    req = req.header("Authorization", format!("Bearer {key}"));
 
     let resp = req.send().await.map_err(|e| {
         format!(
@@ -90,7 +154,7 @@ pub async fn chat_send(
     }
 
     let val: Value = serde_json::from_str(&text).map_err(|e| format!("Bad JSON: {e}"))?;
-    let content = val
+    let reply_text = val
         .get("choices")
         .and_then(Value::as_array)
         .and_then(|c| c.first())
@@ -100,14 +164,44 @@ pub async fn chat_send(
         .unwrap_or("")
         .to_string();
 
-    if content.is_empty() {
+    if reply_text.is_empty() {
         return Err("Empty response from Hermes".to_string());
     }
 
     chat.push(json!({
         "role": "assistant",
-        "content": content.clone()
+        "content": reply_text.clone()
     }));
 
-    Ok(ChatReply { text: content })
+    Ok(ChatReply { text: reply_text })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+
+    #[test]
+    fn prompt_without_context_unchanged() {
+        assert_eq!(build_prompt_with_context("hello", None), "hello");
+    }
+
+    #[test]
+    fn prompt_with_path_and_small_text() {
+        let dir = std::env::temp_dir().join(format!("coucou-hermes-chat-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("note.txt");
+        {
+            let mut f = std::fs::File::create(&path).unwrap();
+            write!(f, "alpha beta").unwrap();
+        }
+        let ctx = ChatFileContext {
+            name: "note.txt".into(),
+            path: Some(path.to_string_lossy().into_owned()),
+        };
+        let out = build_prompt_with_context("summarize", Some(&ctx));
+        assert!(out.contains("Attached file: note.txt"));
+        assert!(out.contains("alpha beta"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

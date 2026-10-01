@@ -3,6 +3,7 @@
 // Connects to Hermes Agent Gateway (`ws://<host>:9119/api/ws`) over Tailscale/LAN.
 // Handles JSON-RPC 2.0 two-way communication:
 //   - capabilities handshake (`server_requests: true`)
+//   - session.resume / session.subscribe
 //   - real-time tool progress & reasoning events
 //   - server requests: tool approvals (allow once/always/deny) & clarify questions
 //   - multi-agent & subagent event tracking (Antigravity, Codex, delegate_task)
@@ -28,6 +29,7 @@ const RECONNECT_BASE_MS: u64 = 1000;
 const RECONNECT_MAX_MS: u64 = 10000;
 const PING_INTERVAL_SECS: u64 = 15;
 const ACK_TIMEOUT_MS: u64 = 800;
+const CONNECT_TIMEOUT_SECS: u64 = 10;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -73,6 +75,10 @@ pub struct HermesClientState {
     active_host: Mutex<String>,
     last_error: Mutex<Option<String>>,
     counter: AtomicU64,
+    /// Bumped on every `start_gateway_connection` so older reconnect loops exit.
+    generation: AtomicU64,
+    loop_task: Mutex<Option<tauri::async_runtime::JoinHandle<()>>>,
+    last_session_id: Mutex<Option<String>>,
 }
 
 impl Default for HermesClientState {
@@ -85,6 +91,9 @@ impl Default for HermesClientState {
             active_host: Mutex::new(String::new()),
             last_error: Mutex::new(None),
             counter: AtomicU64::new(1),
+            generation: AtomicU64::new(0),
+            loop_task: Mutex::new(None),
+            last_session_id: Mutex::new(None),
         }
     }
 }
@@ -100,6 +109,13 @@ impl HermesClientState {
             host: self.active_host.lock().unwrap().clone(),
             last_error: self.last_error.lock().unwrap().clone(),
         }
+    }
+
+    pub fn remember_session_id(&self, session_id: &str) {
+        if session_id.is_empty() {
+            return;
+        }
+        *self.last_session_id.lock().unwrap() = Some(session_id.to_string());
     }
 
     pub fn send_frame(&self, frame: String) -> bool {
@@ -155,6 +171,7 @@ impl HermesClientState {
     }
 }
 
+/// Start (or restart) the gateway reconnect loop. Cancels any previous loop.
 pub fn start_gateway_connection(
     app: AppHandle,
     state: Arc<HermesClientState>,
@@ -162,24 +179,52 @@ pub fn start_gateway_connection(
     auth_user: Option<String>,
     auth_pass: Option<String>,
 ) {
-    tauri::async_runtime::spawn(async move {
-        *state.active_host.lock().unwrap() = url.clone();
+    // Cancel prior loop if any.
+    if let Some(prev) = state.loop_task.lock().unwrap().take() {
+        log::line("hermes cancelling previous reconnect loop");
+        prev.abort();
+    }
+
+    let gen = state.generation.fetch_add(1, Ordering::Relaxed) + 1;
+    *state.active_host.lock().unwrap() = url.clone();
+
+    let state_for_loop = state.clone();
+    let handle = tauri::async_runtime::spawn(async move {
+        let state = state_for_loop;
         let mut backoff = RECONNECT_BASE_MS;
 
         loop {
-            log::line(format!("hermes connecting to {url}"));
+            if state.generation.load(Ordering::Relaxed) != gen {
+                log::line(format!("hermes reconnect loop gen={gen} exiting (superseded)"));
+                break;
+            }
+
+            log::line(format!("hermes connecting gen={gen} to {url}"));
             *state.last_error.lock().unwrap() = None;
 
-            match connect_and_run(&app, &state, &url, auth_user.as_deref(), auth_pass.as_deref()).await {
+            match connect_and_run(
+                &app,
+                &state,
+                gen,
+                &url,
+                auth_user.as_deref(),
+                auth_pass.as_deref(),
+            )
+            .await
+            {
                 Ok(()) => {
-                    log::line("hermes gateway connection closed normally");
+                    log::line(format!("hermes gateway connection closed normally gen={gen}"));
                     backoff = RECONNECT_BASE_MS;
                 }
                 Err(err) => {
-                    let msg = format!("hermes connection error: {err}");
+                    let msg = format!("hermes connection error gen={gen}: {err}");
                     log::line(msg.clone());
                     *state.last_error.lock().unwrap() = Some(msg);
                 }
+            }
+
+            if state.generation.load(Ordering::Relaxed) != gen {
+                break;
             }
 
             state.is_connected.store(false, Ordering::Relaxed);
@@ -189,16 +234,18 @@ pub fn start_gateway_connection(
             backoff = (backoff * 2).min(RECONNECT_MAX_MS);
         }
     });
+
+    *state.loop_task.lock().unwrap() = Some(handle);
 }
 
 async fn connect_and_run(
     app: &AppHandle,
     state: &Arc<HermesClientState>,
+    gen: u64,
     url_str: &str,
     auth_user: Option<&str>,
     auth_pass: Option<&str>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    // Format URL for WS upgrade (e.g. http://host:9119 -> ws://host:9119/api/ws)
     let ws_url = if url_str.starts_with("http://") {
         format!("ws://{}/api/ws", &url_str[7..].trim_end_matches('/'))
     } else if url_str.starts_with("https://") {
@@ -211,7 +258,6 @@ async fn connect_and_run(
         url_str.to_string()
     };
 
-    // In gated mode, authenticate via POST /auth/password-login to obtain session access token
     let mut final_ws_url = ws_url.clone();
     if let (Some(u), Some(p)) = (auth_user, auth_pass) {
         if !u.is_empty() && !p.is_empty() {
@@ -226,6 +272,7 @@ async fn connect_and_run(
             };
 
             let login_url = format!("{http_base}/auth/password-login");
+            log::line(format!("hermes password-login gen={gen} → {login_url}"));
             let http_client = reqwest::Client::builder()
                 .timeout(Duration::from_secs(10))
                 .build()?;
@@ -235,24 +282,43 @@ async fn connect_and_run(
                 "password": p
             });
 
-            if let Ok(resp) = http_client.post(&login_url).json(&body).send().await {
-                if resp.status().is_success() {
-                    for cookie in resp.headers().get_all(reqwest::header::SET_COOKIE) {
-                        if let Ok(cookie_str) = cookie.to_str() {
-                            if let Some(pos) = cookie_str.find("hermes_session_at=") {
-                                let rest = &cookie_str[pos + 18..];
-                                let token_raw = rest.split(';').next().unwrap_or("").trim().trim_matches('"');
-                                if !token_raw.is_empty() {
-                                    final_ws_url = if final_ws_url.contains('?') {
-                                        format!("{final_ws_url}&token={token_raw}")
-                                    } else {
-                                        format!("{final_ws_url}?token={token_raw}")
-                                    };
-                                    break;
+            match http_client.post(&login_url).json(&body).send().await {
+                Ok(resp) => {
+                    let status = resp.status();
+                    if status.is_success() {
+                        let mut got_token = false;
+                        for cookie in resp.headers().get_all(reqwest::header::SET_COOKIE) {
+                            if let Ok(cookie_str) = cookie.to_str() {
+                                if let Some(pos) = cookie_str.find("hermes_session_at=") {
+                                    let rest = &cookie_str[pos + 18..];
+                                    let token_raw = rest
+                                        .split(';')
+                                        .next()
+                                        .unwrap_or("")
+                                        .trim()
+                                        .trim_matches('"');
+                                    if !token_raw.is_empty() {
+                                        final_ws_url = if final_ws_url.contains('?') {
+                                            format!("{final_ws_url}&token={token_raw}")
+                                        } else {
+                                            format!("{final_ws_url}?token={token_raw}")
+                                        };
+                                        got_token = true;
+                                        break;
+                                    }
                                 }
                             }
                         }
+                        log::line(format!(
+                            "hermes password-login ok gen={gen} token={}",
+                            if got_token { "yes" } else { "no" }
+                        ));
+                    } else {
+                        log::line(format!("hermes password-login failed gen={gen} status={status}"));
                     }
+                }
+                Err(err) => {
+                    log::line(format!("hermes password-login error gen={gen}: {err}"));
                 }
             }
         }
@@ -271,33 +337,40 @@ async fn connect_and_run(
         }
     }
 
-    let (ws_stream, _) = connect_async(req).await?;
+    log::line(format!("hermes ws handshake gen={gen} (timeout {CONNECT_TIMEOUT_SECS}s)"));
+    let (ws_stream, _) = tokio::time::timeout(
+        Duration::from_secs(CONNECT_TIMEOUT_SECS),
+        connect_async(req),
+    )
+    .await
+    .map_err(|_| format!("websocket connect timed out after {CONNECT_TIMEOUT_SECS}s"))??;
     let (mut write, mut read) = ws_stream.split();
 
+    *state.last_error.lock().unwrap() = None;
     state.is_connected.store(true, Ordering::Relaxed);
+    log::line(format!("hermes connected gen={gen}"));
     let _ = app.emit("hermes-status", state.status());
 
     let (tx_outgoing, mut rx_outgoing) = mpsc::unbounded_channel::<String>();
     *state.tx_outgoing.lock().unwrap() = Some(tx_outgoing.clone());
 
-    // Send capabilities immediately
-    let caps_id = state.counter.fetch_add(1, Ordering::Relaxed);
-    let caps_frame = json!({
-        "jsonrpc": "2.0",
-        "method": "client.capabilities",
-        "params": {
-            "server_requests": true,
-            "tool_progress": true,
-            "subagent_tree": true
-        },
-        "id": caps_id
-    })
-    .to_string();
-    let _ = write.send(Message::Text(caps_frame)).await;
+    // Capabilities immediately (also re-sent after gateway.ready).
+    send_capabilities(&tx_outgoing, state);
+    log::line(format!("hermes client.capabilities sent gen={gen}"));
+
+    // Session subscribe / resume promptly so we don't wait forever for ready.
+    send_session_handshake(&tx_outgoing, state);
+    log::line(format!("hermes session handshake sent gen={gen}"));
 
     let mut ping_interval = tokio::time::interval(Duration::from_secs(PING_INTERVAL_SECS));
+    let mut saw_ready = false;
 
     loop {
+        if state.generation.load(Ordering::Relaxed) != gen {
+            log::line(format!("hermes connection loop gen={gen} aborted (superseded)"));
+            break;
+        }
+
         tokio::select! {
             _ = ping_interval.tick() => {
                 let ping_frame = json!({
@@ -306,25 +379,40 @@ async fn connect_and_run(
                     "id": state.counter.fetch_add(1, Ordering::Relaxed)
                 }).to_string();
                 if write.send(Message::Text(ping_frame)).await.is_err() {
+                    log::line(format!("hermes ping send failed gen={gen}"));
                     break;
                 }
             }
             Some(msg_text) = rx_outgoing.recv() => {
                 if write.send(Message::Text(msg_text)).await.is_err() {
+                    log::line(format!("hermes outgoing send failed gen={gen}"));
                     break;
                 }
             }
             msg = read.next() => {
-                let Some(msg) = msg else { break };
+                let Some(msg) = msg else {
+                    log::line(format!("hermes ws read ended gen={gen}"));
+                    break;
+                };
                 let msg = msg?;
                 match msg {
                     Message::Text(text) => {
-                        handle_incoming_text(app, state, &tx_outgoing, &text).await;
+                        let became_ready = handle_incoming_text(
+                            app, state, &tx_outgoing, &text, saw_ready,
+                        ).await;
+                        if became_ready && !saw_ready {
+                            saw_ready = true;
+                            log::line(format!("hermes gateway.ready gen={gen}"));
+                            // Re-assert caps + session after ready per SPEC handshake order.
+                            send_capabilities(&tx_outgoing, state);
+                            send_session_handshake(&tx_outgoing, state);
+                        }
                     }
                     Message::Ping(data) => {
                         let _ = write.send(Message::Pong(data)).await;
                     }
-                    Message::Close(_) => {
+                    Message::Close(frame) => {
+                        log::line(format!("hermes ws close gen={gen}: {frame:?}"));
                         break;
                     }
                     _ => {}
@@ -337,46 +425,188 @@ async fn connect_and_run(
     Ok(())
 }
 
+fn send_capabilities(tx: &mpsc::UnboundedSender<String>, state: &HermesClientState) {
+    let caps_id = state.counter.fetch_add(1, Ordering::Relaxed);
+    let caps_frame = json!({
+        "jsonrpc": "2.0",
+        "method": "client.capabilities",
+        "params": {
+            "server_requests": true,
+            "tool_progress": true,
+            "subagent_tree": true
+        },
+        "id": caps_id
+    })
+    .to_string();
+    let _ = tx.send(caps_frame);
+}
+
+fn send_session_handshake(tx: &mpsc::UnboundedSender<String>, state: &HermesClientState) {
+    let id = state.counter.fetch_add(1, Ordering::Relaxed);
+    let session_id = state.last_session_id.lock().unwrap().clone();
+    let frame = if let Some(sid) = session_id {
+        json!({
+            "jsonrpc": "2.0",
+            "method": "session.resume",
+            "params": { "session_id": sid },
+            "id": id
+        })
+        .to_string()
+    } else {
+        // Broaden subscription until a concrete session id is known.
+        json!({
+            "jsonrpc": "2.0",
+            "method": "session.subscribe",
+            "params": { "events": true },
+            "id": id
+        })
+        .to_string()
+    };
+    let _ = tx.send(frame);
+}
+
+/// Returns true if this frame was (or contained) `gateway.ready`.
 async fn handle_incoming_text(
     app: &AppHandle,
     state: &Arc<HermesClientState>,
     tx_outgoing: &mpsc::UnboundedSender<String>,
     text: &str,
-) {
-    let Ok(val) = serde_json::from_str::<Value>(text) else { return };
+    _already_ready: bool,
+) -> bool {
+    let Ok(val) = serde_json::from_str::<Value>(text) else {
+        return false;
+    };
 
-    // Check if this is a Server Request (server asking client for something)
+    remember_session_from_value(state, &val);
+
+    let mut saw_ready = frame_is_gateway_ready(&val);
+
     if let Some(method) = val.get("method").and_then(Value::as_str) {
         let id_val = val.get("id").cloned();
         let params = val.get("params").cloned().unwrap_or(Value::Null);
 
-        match method {
-            "approval" => {
-                handle_approval_request(app, state, tx_outgoing, id_val, params).await;
-                return;
-            }
-            "clarify" => {
-                handle_clarify_request(app, state, tx_outgoing, id_val, params).await;
-                return;
-            }
-            "gateway.ping" => {
-                if let Some(id) = id_val {
-                    let pong = json!({
-                        "jsonrpc": "2.0",
-                        "id": id,
-                        "result": { "ok": true }
-                    })
-                    .to_string();
-                    let _ = tx_outgoing.send(pong);
+        let request_kind = match method {
+            "approval" => Some("approval"),
+            "clarify" => Some("clarify"),
+            "server_request" => server_request_kind(&params),
+            _ => None,
+        };
+
+        if let Some(kind) = request_kind {
+            match kind {
+                "approval" => {
+                    handle_approval_request(app, state, tx_outgoing, id_val, params).await;
+                    return saw_ready;
                 }
-                return;
+                "clarify" => {
+                    handle_clarify_request(app, state, tx_outgoing, id_val, params).await;
+                    return saw_ready;
+                }
+                _ => {}
             }
-            _ => {}
+        }
+
+        if method == "gateway.ping" {
+            if let Some(id) = id_val {
+                let pong = json!({
+                    "jsonrpc": "2.0",
+                    "id": id,
+                    "result": { "ok": true }
+                })
+                .to_string();
+                let _ = tx_outgoing.send(pong);
+            }
+            return saw_ready;
         }
     }
 
-    // Check if this is an Event notification (params contains event payload)
+    // Event notifications (and unknown methods) go to the island.
+    if !saw_ready {
+        saw_ready = event_type_from_frame(&val)
+            .map(|t| t == "gateway.ready")
+            .unwrap_or(false);
+    }
     let _ = app.emit_to(WINDOW_LABEL, "hermes-event", val);
+    saw_ready
+}
+
+fn server_request_kind(params: &Value) -> Option<&'static str> {
+    let ty = params
+        .get("type")
+        .and_then(Value::as_str)
+        .or_else(|| params.get("method").and_then(Value::as_str))
+        .or_else(|| params.get("request").and_then(Value::as_str))?;
+    match ty {
+        "approval" => Some("approval"),
+        "clarify" => Some("clarify"),
+        _ => None,
+    }
+}
+
+fn frame_is_gateway_ready(val: &Value) -> bool {
+    if val.get("method").and_then(Value::as_str) == Some("gateway.ready") {
+        return true;
+    }
+    event_type_from_frame(val).map(|t| t == "gateway.ready").unwrap_or(false)
+}
+
+fn event_type_from_frame(val: &Value) -> Option<&str> {
+    let params = val.get("params")?;
+    if val.get("method").and_then(Value::as_str) == Some("event") {
+        return params.get("type").and_then(Value::as_str);
+    }
+    params.get("type").and_then(Value::as_str)
+}
+
+fn remember_session_from_value(state: &HermesClientState, val: &Value) {
+    let candidates = [
+        val.get("session_id").and_then(Value::as_str),
+        val.get("params")
+            .and_then(|p| p.get("session_id"))
+            .and_then(Value::as_str),
+        val.get("params")
+            .and_then(|p| p.get("payload"))
+            .and_then(|p| p.get("session_id"))
+            .and_then(Value::as_str),
+        val.get("result")
+            .and_then(|p| p.get("session_id"))
+            .and_then(Value::as_str),
+    ];
+    for sid in candidates.into_iter().flatten() {
+        state.remember_session_id(sid);
+    }
+}
+
+fn json_rpc_id_string(id: &Value) -> String {
+    match id {
+        Value::String(s) => s.clone(),
+        Value::Number(n) => n.to_string(),
+        _ => "req".to_string(),
+    }
+}
+
+fn send_approval_ack(tx: &mpsc::UnboundedSender<String>, id: &Value) {
+    // Spec: acknowledge within 800ms so the gateway knows a UI is alive.
+    // Prefer a lightweight notification the gateway can ignore if unused.
+    let ack = json!({
+        "jsonrpc": "2.0",
+        "method": "approval_ack",
+        "params": {
+            "id": id,
+            "ok": true
+        }
+    })
+    .to_string();
+    let _ = tx.send(ack);
+    // Also try JSON-RPC progress-style ack keyed by request id (compatible fallback).
+    let ack2 = json!({
+        "jsonrpc": "2.0",
+        "method": "approval.ack",
+        "params": { "request_id": id, "ok": true }
+    })
+    .to_string();
+    let _ = tx.send(ack2);
+    let _ = ACK_TIMEOUT_MS; // documented budget — ack is sent immediately
 }
 
 async fn handle_approval_request(
@@ -386,24 +616,64 @@ async fn handle_approval_request(
     id_val: Option<Value>,
     params: Value,
 ) {
-    let Some(id) = id_val else { return };
-    let req_id_str = match &id {
-        Value::String(s) => s.clone(),
-        Value::Number(n) => n.to_string(),
-        _ => "req".to_string(),
+    let Some(id) = id_val else {
+        log::line("hermes approval request missing id — ignored");
+        return;
+    };
+    let req_id_str = json_rpc_id_string(&id);
+
+    // Acknowledge immediately (within ACK_TIMEOUT_MS budget).
+    send_approval_ack(tx_outgoing, &id);
+    log::line(format!("hermes approval_ack sent for {req_id_str}"));
+
+    let nested = params
+        .get("params")
+        .cloned()
+        .unwrap_or_else(|| params.clone());
+    let body = if nested.get("command").is_some() || nested.get("tool_name").is_some() {
+        nested
+    } else {
+        params
     };
 
-    let session_id = params.get("session_id").and_then(Value::as_str).unwrap_or_default().to_string();
-    let command = params.get("command").and_then(Value::as_str).unwrap_or_default().to_string();
-    let description = params.get("description").and_then(Value::as_str).unwrap_or_default().to_string();
-    let tool_name = params.get("tool_name").and_then(Value::as_str).map(str::to_string);
-    let choices = params.get("choices")
+    let session_id = body
+        .get("session_id")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    state.remember_session_id(&session_id);
+
+    let command = body
+        .get("command")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    let description = body
+        .get("description")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    let tool_name = body
+        .get("tool_name")
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    let choices = body
+        .get("choices")
         .and_then(Value::as_array)
-        .map(|arr| arr.iter().filter_map(Value::as_str).map(str::to_string).collect())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(Value::as_str)
+                .map(str::to_string)
+                .collect()
+        })
         .unwrap_or_else(|| vec!["once".into(), "always".into(), "deny".into()]);
 
     let (tx_decision, rx_decision) = oneshot::channel::<String>();
-    state.pending_approvals.lock().unwrap().insert(req_id_str.clone(), tx_decision);
+    state
+        .pending_approvals
+        .lock()
+        .unwrap()
+        .insert(req_id_str.clone(), tx_decision);
 
     let payload = ApprovalPayload {
         request_id: req_id_str.clone(),
@@ -414,20 +684,19 @@ async fn handle_approval_request(
         choices,
     };
 
-    // Emit to frontend UI
     let _ = app.emit_to(WINDOW_LABEL, "hermes-approval", payload);
 
     let tx_out = tx_outgoing.clone();
     let pending_map = state.pending_approvals.clone();
 
-    // Spawn decision waiter with 108s decision timeout
     tauri::async_runtime::spawn(async move {
         let decision = match tokio::time::timeout(Duration::from_secs(108), rx_decision).await {
             Ok(Ok(d)) => d,
-            _ => "deny".to_string(), // fallback to deny on timeout
+            _ => "deny".to_string(),
         };
 
         pending_map.lock().unwrap().remove(&req_id_str);
+        log::line(format!("hermes approval reply {req_id_str} → {decision}"));
 
         let response = json!({
             "jsonrpc": "2.0",
@@ -449,24 +718,64 @@ async fn handle_clarify_request(
     id_val: Option<Value>,
     params: Value,
 ) {
-    let Some(id) = id_val else { return };
-    let req_id_str = match &id {
-        Value::String(s) => s.clone(),
-        Value::Number(n) => n.to_string(),
-        _ => "req".to_string(),
+    let Some(id) = id_val else {
+        log::line("hermes clarify request missing id — ignored");
+        return;
+    };
+    let req_id_str = json_rpc_id_string(&id);
+
+    // Lightweight ack so gated gateways know a UI is listening.
+    let ack = json!({
+        "jsonrpc": "2.0",
+        "method": "clarify.ack",
+        "params": { "request_id": id.clone(), "ok": true }
+    })
+    .to_string();
+    let _ = tx_outgoing.send(ack);
+    log::line(format!("hermes clarify.ack sent for {req_id_str}"));
+
+    let nested = params
+        .get("params")
+        .cloned()
+        .unwrap_or_else(|| params.clone());
+    let body = if nested.get("questions").is_some() {
+        nested
+    } else {
+        params
     };
 
-    let session_id = params.get("session_id").and_then(Value::as_str).unwrap_or_default().to_string();
-    let questions_arr = params.get("questions").and_then(Value::as_array);
+    let session_id = body
+        .get("session_id")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    state.remember_session_id(&session_id);
+
+    let questions_arr = body.get("questions").and_then(Value::as_array);
 
     let mut questions = Vec::new();
     if let Some(arr) = questions_arr {
         for q in arr {
-            let qid = q.get("qid").and_then(Value::as_str).unwrap_or_default().to_string();
-            let question = q.get("question").and_then(Value::as_str).unwrap_or_default().to_string();
-            let multi_select = q.get("multi_select").and_then(Value::as_bool).unwrap_or(false);
+            let qid = q
+                .get("qid")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string();
+            let question = q
+                .get("question")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string();
+            let multi_select = q
+                .get("multi_select")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
             let choices = q.get("choices").and_then(Value::as_array).map(|c_arr| {
-                c_arr.iter().filter_map(Value::as_str).map(str::to_string).collect()
+                c_arr
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .map(str::to_string)
+                    .collect()
             });
 
             questions.push(ClarifyQuestion {
@@ -479,7 +788,11 @@ async fn handle_clarify_request(
     }
 
     let (tx_answers, rx_answers) = oneshot::channel::<Value>();
-    state.pending_clarifies.lock().unwrap().insert(req_id_str.clone(), tx_answers);
+    state
+        .pending_clarifies
+        .lock()
+        .unwrap()
+        .insert(req_id_str.clone(), tx_answers);
 
     let payload = ClarifyPayload {
         request_id: req_id_str.clone(),
@@ -499,6 +812,7 @@ async fn handle_clarify_request(
         };
 
         pending_map.lock().unwrap().remove(&req_id_str);
+        log::line(format!("hermes clarify reply {req_id_str}"));
 
         let response = json!({
             "jsonrpc": "2.0",
@@ -519,8 +833,16 @@ fn base64_simple(input: &[u8]) -> String {
     let mut i = 0;
     while i < input.len() {
         let b0 = input[i] as u32;
-        let b1 = if i + 1 < input.len() { input[i + 1] as u32 } else { 0 };
-        let b2 = if i + 2 < input.len() { input[i + 2] as u32 } else { 0 };
+        let b1 = if i + 1 < input.len() {
+            input[i + 1] as u32
+        } else {
+            0
+        };
+        let b2 = if i + 2 < input.len() {
+            input[i + 2] as u32
+        } else {
+            0
+        };
 
         let triple = (b0 << 16) | (b1 << 8) | b2;
 

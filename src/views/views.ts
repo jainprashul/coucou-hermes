@@ -21,7 +21,8 @@ export interface ViewActions {
   /** The ↗ button: opens whatever the focused pill points at. */
   openTarget(): void;
   openUrl(url: string): void;
-  decide(d: "allow" | "deny"): void;
+  /** Hermes choices: once | always | deny. Claude path maps once→allow. */
+  decide(d: "once" | "always" | "deny"): void;
   toggleSound(): void;
   setVolume(v: number): void;
   setAutoClose(seconds: number): void;
@@ -325,11 +326,8 @@ function buildApproval(actions: ViewActions): ViewHost {
       clear(row);
       row.append(
         btn("Refuser", "secondary", () => actions.decide("deny"), "N"),
-        btn("Toujours", "secondary", () => {
-          void Bridge.hermesDecide(approval?.requestId || "", "always");
-          actions.decide("allow");
-        }),
-        btn("Autoriser", "primary", () => actions.decide("allow"), "Y"),
+        btn("Toujours", "secondary", () => actions.decide("always")),
+        btn("Autoriser", "primary", () => actions.decide("once"), "Y"),
       );
     },
   };

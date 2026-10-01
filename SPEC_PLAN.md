@@ -248,3 +248,14 @@
 - **Non-Blocking Guarantee:** If Coucou is paused, closed, or disconnected, remote Hermes sessions must NEVER freeze (approvals fall back to terminal prompt automatically after timeout).
 - **Latency & Responsiveness:** Mochi eye-tracking and animations run at continuous 60 FPS; approval cards appear within 200ms of remote server request.
 - **Security:** Remote credentials and API keys stored exclusively in Windows Credential Manager.
+
+---
+
+## 4. Phase A critical fixes (2026-10-02)
+
+Live Hermes reliability work is documented in:
+
+- `docs/superpowers/specs/2026-10-02-hermes-critical-fixes-design.md`
+- `docs/superpowers/plans/2026-10-02-hermes-critical-fixes.md`
+
+Covers: singleflight WS reconnect, session resume/subscribe, `server_request` + approval ack, approval UI decide/pin fixes, chat file attach (non-streaming). Deferred to Phase B: streaming, multi-agent mini-bot routing, Claude-legacy removal.

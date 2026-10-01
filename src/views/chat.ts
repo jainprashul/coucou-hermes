@@ -72,7 +72,14 @@ export function buildPrompt(onHeightChange: () => void): ViewHost {
 
     try {
       // Island chat talks to the Hermes API server (:8642), not Anthropic.
-      const reply = await Bridge.hermesChatSend(query);
+      // Keep the file chip until the user drops something else / clears it.
+      const file = State.droppedFile;
+      const context = file
+        ? { name: file.name, path: file.path }
+        : State.promptContext?.kind === "file"
+          ? { name: State.promptContext.name, path: State.promptContext.path }
+          : null;
+      const reply = await Bridge.hermesChatSend(query, context);
       State.chatHistory.push({ id: nextId++, role: "assistant", content: reply.text });
       State.stateOverride = null;
       Sound.play("finish");

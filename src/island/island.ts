@@ -139,8 +139,17 @@ export class Island {
         void Bridge.log(`decide ${d} req=${req?.requestId ?? "none"}`);
         if (!req) return;
         Sound.play(d === "deny" ? "blip" : "approve");
-        void Bridge.hermesDecide(req.requestId, d === "deny" ? "deny" : "once");
-        void Bridge.approvalDecision(req.requestId, d === "deny" ? "deny" : "allow");
+
+        // Send exactly one decision. Claude hook approvals only understand allow|deny.
+        const claudePending = State.tasks.some(
+          (t) => t.id === "integration_claude" && t.state === "approval",
+        );
+        if (claudePending) {
+          void Bridge.approvalDecision(req.requestId, d === "deny" ? "deny" : "allow");
+        } else {
+          void Bridge.hermesDecide(req.requestId, d);
+        }
+
         State.pendingApproval = null;
         State.isPinned = false;
         this.fsm.pinned = false;
@@ -331,6 +340,11 @@ export class Island {
     this.fsm.pinned = State.isPinned;
     this.fsm.forceHome();
     this.expand(view);
+  }
+
+  /** Sync FSM pin when an alert surfaces while already expanded (setView path). */
+  pinForAlert() {
+    this.fsm.pinned = true;
   }
 
   reveal() {

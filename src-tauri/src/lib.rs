@@ -350,6 +350,7 @@ async fn hermes_chat_send(
     shared: State<'_, Shared>,
     chat: State<'_, HermesChatSession>,
     prompt: String,
+    context: Option<hermes_api::ChatFileContext>,
 ) -> Result<hermes_api::ChatReply, String> {
     let api_url = {
         let s = shared.settings.lock().unwrap();
@@ -358,7 +359,7 @@ async fn hermes_chat_send(
     // Prefer a dedicated API bearer; fall back to the gateway password when
     // operators reuse the same secret for :8642.
     let api_key = secrets::get("hermes-api-key").or_else(|| secrets::get("hermes-auth-pass"));
-    hermes_api::chat_send(&chat, &api_url, api_key.as_deref(), prompt).await
+    hermes_api::chat_send(&chat, &api_url, api_key.as_deref(), prompt, context).await
 }
 
 #[tauri::command]
