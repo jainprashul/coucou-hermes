@@ -1,0 +1,6 @@
+# Ignore upstream reference repo
+coucou/
+node_modules/
+target/
+dist/
+*.log
