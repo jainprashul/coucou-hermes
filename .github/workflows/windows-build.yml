@@ -38,21 +38,31 @@ jobs:
       - name: Build UI bundles
         run: npm run build:ui
 
-      - name: Build Tauri app
-        uses: tauri-apps/tauri-action@v0
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          tagName: v__VERSION__
-          releaseName: 'Coucou Hermes v__VERSION__'
-          releaseBody: 'Coucou Hermes Windows Companion Release'
-          releaseDraft: false
-          prerelease: false
+      - name: Build coucou-hook binary
+        run: cargo build --release -p coucou-hook
 
-      - name: Upload portable exe artifact
+      - name: Build Tauri app & NSIS installer
+        run: npx tauri build
+
+      - name: Pack release installer
+        shell: pwsh
+        run: |
+          node scripts/pack.mjs
+          Get-ChildItem release | Format-Table Name, Length
+
+      - name: Upload NSIS installer artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Coucou-Hermes-Installer
+          path: |
+            release/*-setup.exe
+          retention-days: 7
+
+      - name: Upload portable binaries artifact
         uses: actions/upload-artifact@v4
         with:
           name: Coucou-Hermes-portable
           path: |
-            src-tauri/target/release/coucou.exe
+            target/release/coucou.exe
+            target/release/coucou-hook.exe
           retention-days: 7
