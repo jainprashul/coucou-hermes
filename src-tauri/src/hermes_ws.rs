@@ -18,7 +18,7 @@ use serde_json::{json, Value};
 use tauri::{AppHandle, Emitter};
 use tokio::sync::{mpsc, oneshot};
 use tokio_tungstenite::connect_async;
-use tokio_tungstenite::tungstenite::handshake::client::Request;
+use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::Message;
 
 use crate::island::WINDOW_LABEL;
@@ -232,18 +232,20 @@ async fn connect_and_run(
         }
     }
 
-    let mut req = Request::get(&final_ws_url);
+    let mut req = final_ws_url.into_client_request()?;
     if let (Some(u), Some(p)) = (auth_user, auth_pass) {
         if !u.is_empty() {
             use std::io::Write;
             let mut auth_bytes = Vec::new();
             let _ = write!(auth_bytes, "{u}:{p}");
             let encoded = base64_simple(&auth_bytes);
-            req = req.header("Authorization", format!("Basic {encoded}"));
+            if let Ok(val) = format!("Basic {encoded}").parse() {
+                req.headers_mut().insert("Authorization", val);
+            }
         }
     }
 
-    let (ws_stream, _) = connect_async(req.body(())?).await?;
+    let (ws_stream, _) = connect_async(req).await?;
     let (mut write, mut read) = ws_stream.split();
 
     state.is_connected.store(true, Ordering::Relaxed);
