@@ -3,7 +3,7 @@
 
 import { h, svg, clear } from "./dom";
 import { ICONS } from "./icons";
-import { Bridge, type ChatContext } from "../core/bridge";
+import { Bridge } from "../core/bridge";
 import { Sound } from "../core/sound";
 import { State, type ChatMessage } from "../core/state";
 import type { ViewHost } from "./views";
@@ -70,21 +70,10 @@ export function buildPrompt(onHeightChange: () => void): ViewHost {
     State.notify();
     onHeightChange();
 
-    const file = State.droppedFile;
-    const context: ChatContext | null =
-      State.chatHistory.length === 1 && file ? { kind: "file", name: file.name, path: file.path } : null;
-
     try {
-      let replyText = "";
-      try {
-        const reply = await Bridge.hermesChatSend(query);
-        replyText = reply.text;
-      } catch (hermesErr) {
-        console.warn("[coucou-hermes] hermesChatSend failed, trying fallback:", hermesErr);
-        const reply = await Bridge.chatSend(query, context);
-        replyText = reply.text;
-      }
-      State.chatHistory.push({ id: nextId++, role: "assistant", content: replyText });
+      // Island chat talks to the Hermes API server (:8642), not Anthropic.
+      const reply = await Bridge.hermesChatSend(query);
+      State.chatHistory.push({ id: nextId++, role: "assistant", content: reply.text });
       State.stateOverride = null;
       Sound.play("finish");
     } catch (err) {

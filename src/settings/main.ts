@@ -43,7 +43,7 @@ function renderDiff(text: string): HTMLElement {
 
 // ── Hermes Gateway section ───────────────────────────────────────────────────
 
-function hermesSection(hasAuthPass: boolean): HTMLElement {
+function hermesSection(hasAuthPass: boolean, hasApiKey: boolean): HTMLElement {
   const body = h("div", { style: "display:flex;flex-direction:column;gap:12px" });
 
   const dotEl = statusDot(false);
@@ -74,6 +74,12 @@ function hermesSection(hasAuthPass: boolean): HTMLElement {
     style: "width:160px;padding:6px 10px;background:#1e1e24;border:1px solid #3e3e48;color:#fff;border-radius:6px",
   }) as HTMLInputElement;
 
+  const apiKeyInput = h("input", {
+    type: "password",
+    placeholder: hasApiKey ? "•••••••• (saved)" : "Optional bearer for :8642 chat",
+    style: "flex:1;min-width:220px;padding:6px 10px;background:#1e1e24;border:1px solid #3e3e48;color:#fff;border-radius:6px",
+  }) as HTMLInputElement;
+
   const feedback = h("div", { class: "hint", style: "font-size:12px;margin-top:2px" });
 
   const connectBtn = h("button", {
@@ -89,18 +95,23 @@ function hermesSection(hasAuthPass: boolean): HTMLElement {
       settings.apiServerUrl = apiInput.value.trim();
       settings.authUsername = userInput.value.trim();
       await save();
-      if (passInput.value.trim()) {
-        try {
+      try {
+        if (passInput.value.trim()) {
           await Bridge.secretSet("hermes-auth-pass", passInput.value.trim());
           passInput.value = "";
           passInput.placeholder = "•••••••• (saved)";
-        } catch (e) {
-          feedback.textContent = `Credential store error: ${String(e)}`;
-          feedback.style.color = "#f4505e";
-          connectBtn.disabled = false;
-          connectBtn.textContent = "Save & Connect";
-          return;
         }
+        if (apiKeyInput.value.trim()) {
+          await Bridge.secretSet("hermes-api-key", apiKeyInput.value.trim());
+          apiKeyInput.value = "";
+          apiKeyInput.placeholder = "•••••••• (saved)";
+        }
+      } catch (e) {
+        feedback.textContent = `Credential store error: ${String(e)}`;
+        feedback.style.color = "#f4505e";
+        connectBtn.disabled = false;
+        connectBtn.textContent = "Save & Connect";
+        return;
       }
       try {
         await Bridge.hermesConnect();
@@ -120,7 +131,7 @@ function hermesSection(hasAuthPass: boolean): HTMLElement {
   body.append(
     h("div", {
       class: "hint",
-      text: "Connects to your remote Hermes Agent across Tailscale or local network for live tool progress, subagent monitoring, and instant tool approvals.",
+      text: "Gateway (:9119) drives live status & approvals. Island chat uses the API server (:8642).",
     }),
     h("div", { class: "row" },
       h("label", { text: "Gateway URL" }),
@@ -136,6 +147,10 @@ function hermesSection(hasAuthPass: boolean): HTMLElement {
       passInput,
     ),
     h("div", { class: "row" },
+      h("label", { text: "API key" }),
+      apiKeyInput,
+    ),
+    h("div", { class: "row" },
       h("label", { text: "Auto-connect" }),
       toggle(settings.autoConnect, (v) => { settings.autoConnect = v; void save(); }),
       connectBtn,
@@ -146,7 +161,7 @@ function hermesSection(hasAuthPass: boolean): HTMLElement {
   const applyStatus = (st: any) => {
     if (st && st.connected) {
       dotEl.style.background = "#22c55e";
-      feedback.textContent = `Connected to ${st.activeHost || "gateway"}`;
+      feedback.textContent = `Connected to ${st.host || "gateway"}`;
       feedback.style.color = "#22c55e";
     } else if (st && st.lastError) {
       dotEl.style.background = "#f4505e";
@@ -553,6 +568,7 @@ async function main() {
 
   const hasKey = (await Bridge.secretPresent("anthropic-api-key")) ?? false;
   const hasAuthPass = (await Bridge.secretPresent("hermes-auth-pass")) ?? false;
+  const hasHermesApiKey = (await Bridge.secretPresent("hermes-api-key")) ?? false;
 
   const keys = [
     "stripe-api-key", "github-token", "vercel-token",
@@ -564,7 +580,7 @@ async function main() {
   clear(root);
   root.append(
     h("h1", {}, h("span", { text: "Coucou Hermes" }), h("span", { class: "version", text: version })),
-    hermesSection(hasAuthPass),
+    hermesSection(hasAuthPass, hasHermesApiKey),
     claudeSection(status),
     apiSection(hasKey),
     integrationsSection(present),

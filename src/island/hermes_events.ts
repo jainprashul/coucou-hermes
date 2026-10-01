@@ -49,10 +49,55 @@ function formatToolStep(toolName: string, args: Record<string, unknown> | null):
   return label;
 }
 
+function syncHermesIntegrationStatus(status: HermesConnectionStatus) {
+  const prev = State.integrations[HERMES_ID] ?? {
+    data: {}, error: null, loaded: false, configured: false,
+  };
+  State.integrations[HERMES_ID] = {
+    ...prev,
+    configured: status.connected,
+    loaded: status.connected,
+    error: status.connected ? null : status.lastError,
+  };
+}
+
+/** Hermes gateway frames use JSON-RPC `method: "event"` with `params.type`. */
+function parseGatewayFrame(frame: Record<string, unknown>): {
+  eventName: string;
+  params: Record<string, unknown>;
+  payload: Record<string, unknown>;
+} {
+  const params = (frame.params && typeof frame.params === "object"
+    ? frame.params
+    : {}) as Record<string, unknown>;
+  const payload = (params.payload && typeof params.payload === "object"
+    ? params.payload
+    : params) as Record<string, unknown>;
+
+  let eventName = "";
+  if (frame.method === "event" && typeof params.type === "string") {
+    eventName = params.type;
+  } else if (typeof frame.event === "string") {
+    eventName = frame.event;
+  } else if (typeof frame.method === "string" && frame.method.includes(".")) {
+    eventName = frame.method;
+  }
+
+  return { eventName, params, payload };
+}
+
 export function registerHermesHandlers(island: Island) {
   // 1. Connection status
+  void Bridge.hermesStatus().then((status) => {
+    if (!status) return;
+    State.setHermesStatus(status);
+    syncHermesIntegrationStatus(status);
+    State.notify();
+  });
+
   void onEvent<HermesConnectionStatus>("hermes-status", (status) => {
     State.setHermesStatus(status);
+    syncHermesIntegrationStatus(status);
     if (!status.connected && status.lastError) {
       console.warn("[coucou-hermes] Connection:", status.lastError);
     }
@@ -87,9 +132,7 @@ function surfaceView(island: Island, view: Parameters<Island["alert"]>[0], isAle
 function handleHermesEvent(island: Island, frame: Record<string, unknown>) {
   if (State.paused) return;
 
-  const eventName = typeof frame.event === "string" ? frame.event : "";
-  const params = (frame.params && typeof frame.params === "object" ? frame.params : {}) as Record<string, unknown>;
-  const payload = (params.payload && typeof params.payload === "object" ? params.payload : params) as Record<string, unknown>;
+  const { eventName, params, payload } = parseGatewayFrame(frame);
 
   switch (eventName) {
     case "gateway.ready":
@@ -172,10 +215,62 @@ function handleHermesEvent(island: Island, frame: Record<string, unknown>) {
       break;
     }
 
-    case "error": {
+    case "error":
+    case "turn_error": {
       State.updateTask(HERMES_ID, "error");
       Sound.play("error");
       surfaceView(island, "error", true);
+      break;
+    }
+
+    case "approval.request": {
+      const requestId = payload.request_id ?? payload.requestId;
+      handleHermesApproval(island, {
+        requestId: typeof requestId === "string" ? requestId : String(requestId ?? ""),
+        sessionId: typeof params.session_id === "string"
+          ? params.session_id
+          : typeof payload.session_id === "string"
+            ? payload.session_id
+            : "",
+        toolName: typeof payload.tool_name === "string" ? payload.tool_name : undefined,
+        command: typeof payload.command === "string" ? payload.command : "",
+        description: typeof payload.description === "string" ? payload.description : "",
+        choices: Array.isArray(payload.choices)
+          ? payload.choices.filter((c): c is string => typeof c === "string")
+          : ["once", "always", "deny"],
+      });
+      break;
+    }
+
+    case "clarify.request": {
+      const requestId = payload.request_id ?? payload.requestId;
+      const rawQuestions = payload.questions;
+      const questions = Array.isArray(rawQuestions)
+        ? rawQuestions.flatMap((q) => {
+            if (!q || typeof q !== "object") return [];
+            const row = q as Record<string, unknown>;
+            const qid = typeof row.qid === "string" ? row.qid : "";
+            const question = typeof row.question === "string" ? row.question : "";
+            if (!qid && !question) return [];
+            return [{
+              qid,
+              question,
+              choices: Array.isArray(row.choices)
+                ? row.choices.filter((c): c is string => typeof c === "string")
+                : undefined,
+              multiSelect: row.multi_select === true || row.multiSelect === true,
+            }];
+          })
+        : [];
+      handleHermesClarify(island, {
+        requestId: typeof requestId === "string" ? requestId : String(requestId ?? ""),
+        sessionId: typeof params.session_id === "string"
+          ? params.session_id
+          : typeof payload.session_id === "string"
+            ? payload.session_id
+            : "",
+        questions,
+      });
       break;
     }
 

@@ -1,6 +1,22 @@
 # Ignore upstream reference repo
 coucou/
+
+# Dependencies & caches
 node_modules/
+
+# Rust / Tauri build
 target/
+src-tauri/gen/
+
+# Frontend build
 dist/
+
+# Local pack outputs (see scripts/pack.mjs)
+dist-bin/
+release/
+
+# Logs & env
 *.log
+.env
+.env.*
+!.env.example

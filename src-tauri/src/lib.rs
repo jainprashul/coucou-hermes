@@ -355,7 +355,9 @@ async fn hermes_chat_send(
         let s = shared.settings.lock().unwrap();
         s.api_server_url.clone()
     };
-    let api_key = secrets::get("hermes-api-key");
+    // Prefer a dedicated API bearer; fall back to the gateway password when
+    // operators reuse the same secret for :8642.
+    let api_key = secrets::get("hermes-api-key").or_else(|| secrets::get("hermes-auth-pass"));
     hermes_api::chat_send(&chat, &api_url, api_key.as_deref(), prompt).await
 }
 

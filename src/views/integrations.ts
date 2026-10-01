@@ -53,6 +53,33 @@ const OPEN_URLS: Record<string, string> = {
   integration_calcom: "https://app.cal.com/bookings",
 };
 
+function hermesGatewayCard(task: AgentTask, openSettings: () => void): HTMLElement {
+  const st = State.hermesStatus;
+  const connected = st.connected;
+  const label = connected
+    ? `Connected · ${st.host || "gateway"}`
+    : st.lastError ?? "Not connected — open Settings to connect";
+  const statusColor = connected ? "#22C55E" : "#F4505E";
+
+  const actions = h("div", { class: "int-actions" });
+  actions.append(
+    h("button", {
+      class: "link-btn",
+      style: `color:${task.color}d9`,
+      text: connected ? "Reconnect in Settings…" : "Connect in Settings…",
+      onclick: openSettings,
+    }),
+  );
+
+  return h(
+    "div",
+    { class: "int-card" },
+    header(task.color, task.name, "Hermes Gateway"),
+    h("div", { class: "int-status" }, dot(statusColor, 5), h("span", { text: label })),
+    actions,
+  );
+}
+
 function idleCard(task: AgentTask, openSettings: () => void): HTMLElement {
   const info = State.integrations[task.id];
   const configured = info?.configured ?? false;
@@ -404,6 +431,9 @@ export function hasIntegrationData(id: string): boolean {
 }
 
 export function renderIntegrationCard(task: AgentTask, hooks: IntegrationCardHooks): HTMLElement {
+  if (task.id === "integration_hermes") {
+    return hermesGatewayCard(task, hooks.openSettings);
+  }
   if (task.id === "integration_n8n") {
     const hasActivity = task.steps.length > 0 && (task.state === "finished" || task.state === "error");
     return hooks.detailOpen && hasActivity

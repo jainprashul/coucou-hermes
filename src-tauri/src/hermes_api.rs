@@ -57,7 +57,7 @@ pub async fn chat_send(
         "content": prompt
     }));
 
-    let mut body = json!({
+    let body = json!({
         "model": "hermes-agent",
         "messages": chat.snapshot(),
         "stream": false
@@ -70,12 +70,23 @@ pub async fn chat_send(
         }
     }
 
-    let resp = req.send().await.map_err(|e| format!("Network error: {e}"))?;
+    let resp = req.send().await.map_err(|e| {
+        format!(
+            "Can't reach Hermes API at {endpoint} ({e}). Check API Server URL in Settings."
+        )
+    })?;
     let status = resp.status();
     let text = resp.text().await.map_err(|e| e.to_string())?;
 
+    if status.as_u16() == 401 || status.as_u16() == 403 {
+        return Err(
+            "Hermes API auth failed. Set Hermes API key in Settings (under Remote Gateway)."
+                .to_string(),
+        );
+    }
     if !status.is_success() {
-        return Err(format!("Hermes API {status}: {text}"));
+        let preview = text.chars().take(180).collect::<String>();
+        return Err(format!("Hermes API {status}: {preview}"));
     }
 
     let val: Value = serde_json::from_str(&text).map_err(|e| format!("Bad JSON: {e}"))?;

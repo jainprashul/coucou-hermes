@@ -45,7 +45,22 @@ function sharedSounds(): Plugin {
 export default defineConfig({
   plugins: [sharedSounds()],
   clearScreen: false,
-  server: { port: 1420, strictPort: true, host: "127.0.0.1" },
+  server: {
+    port: 1420,
+    strictPort: true,
+    host: "127.0.0.1",
+    // Cargo locks DLLs under target/; watching them crashes Vite on Windows (EBUSY).
+    watch: {
+      ignored: [
+        "**/target/**",
+        "**/src-tauri/target/**",
+        "**/dist/**",
+        "**/dist-bin/**",
+        "**/release/**",
+        "**/node_modules/**",
+      ],
+    },
+  },
   envPrefix: ["VITE_", "TAURI_ENV_"],
   build: {
     target: "chrome110",

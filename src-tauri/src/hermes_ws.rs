@@ -110,22 +110,48 @@ impl HermesClientState {
         }
     }
 
+    pub fn send_rpc_request(&self, method: &str, params: Value) -> bool {
+        let id = self.counter.fetch_add(1, Ordering::Relaxed);
+        let frame = json!({
+            "jsonrpc": "2.0",
+            "method": method,
+            "params": params,
+            "id": id
+        })
+        .to_string();
+        self.send_frame(frame)
+    }
+
     pub fn decide_approval(&self, request_id: &str, choice: &str) -> bool {
         if let Some(tx) = self.pending_approvals.lock().unwrap().remove(request_id) {
             let _ = tx.send(choice.to_string());
-            true
-        } else {
-            false
+            return true;
         }
+        let gateway_choice = match choice {
+            "allow" => "once",
+            other => other,
+        };
+        self.send_rpc_request(
+            "approval.respond",
+            json!({
+                "request_id": request_id,
+                "choice": gateway_choice,
+            }),
+        )
     }
 
     pub fn answer_clarify(&self, request_id: &str, answers: Value) -> bool {
         if let Some(tx) = self.pending_clarifies.lock().unwrap().remove(request_id) {
             let _ = tx.send(answers);
-            true
-        } else {
-            false
+            return true;
         }
+        self.send_rpc_request(
+            "clarify.respond",
+            json!({
+                "request_id": request_id,
+                "answer": answers,
+            }),
+        )
     }
 }
 

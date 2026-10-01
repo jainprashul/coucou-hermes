@@ -139,7 +139,7 @@ export class Island {
         void Bridge.log(`decide ${d} req=${req?.requestId ?? "none"}`);
         if (!req) return;
         Sound.play(d === "deny" ? "blip" : "approve");
-        void Bridge.hermesDecide(req.requestId, d);
+        void Bridge.hermesDecide(req.requestId, d === "deny" ? "deny" : "once");
         void Bridge.approvalDecision(req.requestId, d === "deny" ? "deny" : "allow");
         State.pendingApproval = null;
         State.isPinned = false;
