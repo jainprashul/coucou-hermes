@@ -74,18 +74,46 @@ function hermesSection(hasAuthPass: boolean): HTMLElement {
     style: "width:160px;padding:6px 10px;background:#1e1e24;border:1px solid #3e3e48;color:#fff;border-radius:6px",
   }) as HTMLInputElement;
 
+  const feedback = h("div", { class: "hint", style: "font-size:12px;margin-top:2px" });
+
   const connectBtn = h("button", {
     class: "primary",
     text: "Save & Connect",
     onclick: async () => {
+      connectBtn.disabled = true;
+      connectBtn.textContent = "Connecting...";
+      feedback.textContent = "Negotiating gateway authentication...";
+      feedback.style.color = "#38bdf8";
+
       settings.gatewayUrl = gwInput.value.trim();
       settings.apiServerUrl = apiInput.value.trim();
       settings.authUsername = userInput.value.trim();
       await save();
       if (passInput.value.trim()) {
-        await Bridge.secretSet("hermes-auth-pass", passInput.value.trim());
+        try {
+          await Bridge.secretSet("hermes-auth-pass", passInput.value.trim());
+          passInput.value = "";
+          passInput.placeholder = "•••••••• (saved)";
+        } catch (e) {
+          feedback.textContent = `Credential store error: ${String(e)}`;
+          feedback.style.color = "#f4505e";
+          connectBtn.disabled = false;
+          connectBtn.textContent = "Save & Connect";
+          return;
+        }
       }
-      void Bridge.hermesConnect();
+      try {
+        await Bridge.hermesConnect();
+        feedback.textContent = "Connecting to gateway...";
+      } catch (err) {
+        feedback.textContent = `Connect error: ${String(err)}`;
+        feedback.style.color = "#f4505e";
+      } finally {
+        window.setTimeout(() => {
+          connectBtn.disabled = false;
+          connectBtn.textContent = "Save & Connect";
+        }, 2000);
+      }
     },
   });
 
@@ -112,13 +140,25 @@ function hermesSection(hasAuthPass: boolean): HTMLElement {
       toggle(settings.autoConnect, (v) => { settings.autoConnect = v; void save(); }),
       connectBtn,
     ),
+    feedback,
   );
 
-  void Bridge.hermesStatus().then((st) => {
+  const applyStatus = (st: any) => {
     if (st && st.connected) {
       dotEl.style.background = "#22c55e";
+      feedback.textContent = `Connected to ${st.activeHost || "gateway"}`;
+      feedback.style.color = "#22c55e";
+    } else if (st && st.lastError) {
+      dotEl.style.background = "#f4505e";
+      feedback.textContent = st.lastError;
+      feedback.style.color = "#f4505e";
+    } else {
+      dotEl.style.background = "#f4505e";
     }
-  });
+  };
+
+  void Bridge.hermesStatus().then(applyStatus);
+  void onEvent<any>("hermes-status", applyStatus);
 
   return section;
 }

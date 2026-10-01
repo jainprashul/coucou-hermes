@@ -157,7 +157,7 @@ pub fn start_gateway_connection(
             }
 
             state.is_connected.store(false, Ordering::Relaxed);
-            let _ = app.emit_to(WINDOW_LABEL, "hermes-status", state.status());
+            let _ = app.emit("hermes-status", state.status());
 
             tokio::time::sleep(Duration::from_millis(backoff)).await;
             backoff = (backoff * 2).min(RECONNECT_MAX_MS);
@@ -247,7 +247,7 @@ async fn connect_and_run(
     let (mut write, mut read) = ws_stream.split();
 
     state.is_connected.store(true, Ordering::Relaxed);
-    let _ = app.emit_to(WINDOW_LABEL, "hermes-status", state.status());
+    let _ = app.emit("hermes-status", state.status());
 
     let (tx_outgoing, mut rx_outgoing) = mpsc::unbounded_channel::<String>();
     *state.tx_outgoing.lock().unwrap() = Some(tx_outgoing.clone());
