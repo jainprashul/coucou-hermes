@@ -264,6 +264,7 @@ function handleHook(island: Island, payload: HookPayload) {
           State.removeTask(agentId);
         } else {
           State.updateTask(agentId, "idle");
+          clearSession(agentId);
           State.setPillBadge(agentId, null);
         }
       }, 5200);

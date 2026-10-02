@@ -8,6 +8,15 @@ import type { Island } from "./island";
 
 const HERMES_ID = "integration_hermes";
 
+function clearHermesSession() {
+  const t = State.tasks.find((x) => x.id === HERMES_ID);
+  if (!t) return;
+  t.steps = [];
+  t.stepIndex = 0;
+  t.name = "Hermes Agent";
+  t.pillBadge = null;
+}
+
 const TOOL_LABELS: Record<string, string> = {
   terminal: "Exécute",
   execute_code: "Code Python",
@@ -167,7 +176,8 @@ function handleHermesEvent(island: Island, frame: Record<string, unknown>) {
     // the island, so ignore them quietly instead of logging noisy "unknown event"
     // lines every few seconds.
     case "sessions.changed":
-    case "platforms.changed": {
+    case "platforms.changed":
+    case "projects.changed": {
       break;
     }
 
@@ -234,6 +244,7 @@ function handleHermesEvent(island: Island, frame: Record<string, unknown>) {
         surfaceView(island, "finished", true);
         window.setTimeout(() => {
           State.updateTask(HERMES_ID, "idle");
+          clearHermesSession();
           State.setPillBadge(HERMES_ID, null);
         }, 5200);
       } else if (status === "error") {
