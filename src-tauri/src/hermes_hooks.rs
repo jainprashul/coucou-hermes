@@ -430,7 +430,11 @@ fn map_event_name(raw: &str, map: &serde_json::Map<String, serde_json::Value>) -
                 Some("PostToolUse")
             }
         }
-        "post_llm_call" | "agent:end" => Some("Stop"),
+        // End-of-turn / loop-end fallbacks from Hermes outbound webhooks.
+        // `post_llm_call` is the normal successful turn terminator; `on_session_finalize`
+        // and `agent_loop_stopped` are last-chance boundaries that still mean the island
+        // should stop showing the last tool step if the primary stop event was missed.
+        "post_llm_call" | "agent:end" | "on_session_finalize" | "agent_loop_stopped" => Some("Stop"),
         "subagent_start" => Some("SubagentStart"),
         "subagent_stop" => Some("SubagentStop"),
         _ => None,

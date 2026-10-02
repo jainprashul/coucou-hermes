@@ -163,6 +163,14 @@ function handleHermesEvent(island: Island, frame: Record<string, unknown>) {
       break;
     }
 
+    // Gateway change-watcher heartbeats. They are informative, not actionable for
+    // the island, so ignore them quietly instead of logging noisy "unknown event"
+    // lines every few seconds.
+    case "sessions.changed":
+    case "platforms.changed": {
+      break;
+    }
+
     case "prompt.submit":
     case "message.start": {
       State.updateTask(HERMES_ID, "thinking");
