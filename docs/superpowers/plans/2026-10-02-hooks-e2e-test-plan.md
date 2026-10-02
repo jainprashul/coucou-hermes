@@ -70,20 +70,20 @@ live-ticker source for messaging sessions; that is a feature, not just a test).
 ## Test plan
 
 ### Phase 1 — Protocol fixes in the app (Rust, small diff)
-1. `hermes_ws.rs::send_capabilities` — drop `tool_progress` and
-   `subagent_tree`; send only `{server_requests: true}`. (Server
-   capabilities come from the result, not from what we ask.)
-2. `hermes_ws.rs::send_session_handshake` — replace the
-   `session.subscribe {events: true}` branch (used when no session id is
-   known) with `session.list` → pick/remember the most recent session →
-   `session.resume`; keep `session.resume` for the known-id path.
-3. `hermes_ws.rs` ping — keep `gateway.ping` (still accepted) but prefer the
-   canonical `ping` method; either passes today.
-4. Unit: extend `hermes_api::tests`/new `hermes_ws` tests asserting the exact
-   frame shapes (no extra caps fields; no `session.subscribe`).
-5. `cargo check --target x86_64-pc-windows-gnu` (VM cross-compile) +
-   `npm run build:ui` (tsc) both green.
-   **Commit after each phase** (per standing rule).
+**DONE 2026-10-02 — commit `37baa08` (single file: `src-tauri/src/hermes_ws.rs`, +235/−20).**
+- [x] `send_capabilities` → `build_capabilities_frame`: only `{server_requests: true}`
+- [x] fallback branch → `session.list {}` (tracked via new `pending_list_id` state field);
+      result handler picks most recent non-ended session (`ended_at`/`last_active`
+      with `started_at` fallback — matches the live gateway's sparse WS session
+      entries) and issues `session.resume`
+- [x] `gateway.ping` keepalive kept (still accepted)
+- [x] 4 unit tests (caps frame shape, fallback frame shape, resume path,
+      `pick_recent_session_id` incl. live-gateway format) — compile for
+      x86_64-pc-windows-gnu (`cargo check --tests` green); execution needs
+      Windows/CI (host `cargo test` can't compile: windows crate)
+- [x] Windows cross-compile green (orchestrator re-verified with forced
+      recompile after `touch`, not peer-claimed)
+- [x] Committed
 
 ### Phase 2 — Headless E2E (VM, no app needed)
 Already written: `~/.hermes/cache/scratch/coucou_ws_e2e.py`. After Phase 1,
