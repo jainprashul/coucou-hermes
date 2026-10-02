@@ -41,6 +41,27 @@ Current script value:
 }
 ```
 
+### Frontend unit tests (pure modules, Vitest)
+```bash
+cd /home/X/Playground/coucou-hermes
+npm test
+```
+
+Current script value:
+```json
+{
+  "test": "vitest run"
+}
+```
+
+Covers pure modules only — no DOM, no Tauri, no window APIs:
+- `src/core/layout.test.ts` — island geometry, bot placement, glow/wash colors
+- `src/core/anim.test.ts` — easing, cubic-bezier, Spring/Tracked
+- `src/upload/sequence.test.ts` — USC constants + upload progress curve
+
+Config: `vitest.config.ts` (node environment, `src/**/*.test.ts`).
+App source must not need test-only imports; keep app code unchanged.
+
 ### Backend
 ```bash
 cd /home/X/Playground/coucou-hermes
