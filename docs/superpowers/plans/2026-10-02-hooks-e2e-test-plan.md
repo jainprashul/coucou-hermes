@@ -86,12 +86,21 @@ live-ticker source for messaging sessions; that is a feature, not just a test).
 - [x] Committed
 
 ### Phase 2 — Headless E2E (VM, no app needed)
-Already written: `~/.hermes/cache/scratch/coucou_ws_e2e.py`. After Phase 1,
-flip PART A to the corrected frames and assert ALL PASS:
-login → caps (result lists `approval`/`clarify`) → ready → session.list →
+**DONE 2026-10-02 — `scripts/hermes_gateway_e2e.py` (repo script, no app/display needed).**
+Runs the app's post-Phase-1 frames against the live gateway and asserts each
+step: login → caps (result lists `approval`/`clarify`) → ready → session.list →
 resume → events.since → ping → create → prompt.submit → message.complete.
-Add the cross-process negative check as a **documented expectation** (not a
-failure): live events absent for foreign-process sessions.
+Result: **9/9 hard checks PASS (+1 soft/informational)** against
+`127.0.0.1:9119`.
+- The resumed-session `live_event_stream` is a **soft** (non-gating) check:
+  cross-process live-event relay is a known limitation (Phase 4). If the
+  resumed session's turn runs in a different backend process, no live frames
+  reach this WS — reported as SKIP, not a failure.
+- The deterministic live-stream proof is the in-process scratch prompt turn
+  (`session.create` + `prompt.submit` → `message.start`/`thinking.delta`/
+  `message.complete`), which is hard-gated and passing.
+- Credentials via `--username/--password`, env, or `~/.hermes/.env`; never
+  printed. `websockets` required. Exit 0 = all hard checks pass.
 
 ### Phase 3 — Manual E2E (Prashul's PC, the app itself)
 | # | Check | Pass? |
