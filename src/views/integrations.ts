@@ -8,6 +8,7 @@ import { h, svg, clear, dot } from "./dom";
 import { ICONS } from "./icons";
 import { State, type AgentTask } from "../core/state";
 import { Bridge } from "../core/bridge";
+import { INTEGRATION_URLS } from "../core/integrations";
 
 /** Same shape as the Swift `timeAgo` computed properties. */
 export function timeAgo(value: unknown): string {
@@ -44,14 +45,7 @@ function arr(id: string, key: string): Record<string, unknown>[] {
 
 // ── Not configured / idle ─────────────────────────────────────────────────────
 
-const OPEN_URLS: Record<string, string> = {
-  integration_resend: "https://resend.com/emails",
-  integration_vercel: "https://vercel.com/dashboard",
-  integration_github: "https://github.com",
-  integration_stripe: "https://dashboard.stripe.com/payments",
-  integration_notion: "https://notion.so",
-  integration_calcom: "https://app.cal.com/bookings",
-};
+const OPEN_URLS = INTEGRATION_URLS;
 
 function hermesGatewayCard(task: AgentTask, openSettings: () => void): HTMLElement {
   const st = State.hermesStatus;

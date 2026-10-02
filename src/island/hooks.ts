@@ -4,8 +4,10 @@
 // terminal (Windows Terminal, VS Code, PowerShell…) and all of them are handled.
 
 import { Bridge, onEvent } from "../core/bridge";
+import { EVENT_NAMES } from "../core/events";
 import { Sound } from "../core/sound";
 import { State } from "../core/state";
+import { toolLabel } from "./toolLabels";
 import type { Island } from "./island";
 
 const CLAUDE_ID = "integration_claude";
@@ -61,41 +63,10 @@ function lastPathComponent(p: string): string {
   return idx >= 0 ? cleaned.slice(idx + 1) : cleaned;
 }
 
-/** frenchStep() — same labels as the macOS app. */
-const TOOL_LABELS: Record<string, string> = {
-  Bash: "Exécute",
-  Read: "Lit",
-  Write: "Écrit",
-  Edit: "Modifie",
-  Glob: "Cherche",
-  Grep: "Recherche",
-  WebSearch: "Recherche web",
-  WebFetch: "Récupère",
-  TodoWrite: "Tâches",
-  Task: "Agent",
-  LS: "Liste",
-  MultiEdit: "Modifie",
-  NotebookEdit: "Notebook",
-  PowerShell: "Exécute",
-  // Hermes tool names (outbound webhooks / remote agent)
-  terminal: "Exécute",
-  execute_code: "Code Python",
-  patch: "Modifie",
-  write_file: "Écrit",
-  read_file: "Lit",
-  search_files: "Cherche",
-  web_search: "Recherche web",
-  web_extract: "Extrait page",
-  delegate_task: "Délègue tâche",
-  browser_exec: "Navigateur",
-  memory: "Mémoire",
-  skill_manage: "Compétence",
-  skill_view: "Consulte doc",
-  clarify: "Question",
-};
+/** frenchStep() — same labels as the macOS app (shared with the Hermes gateway handler). */
 
 function stepLabel(tool: string, input: Record<string, unknown>): string {
-  const label = TOOL_LABELS[tool] ?? tool;
+  const label = toolLabel(tool);
   const str = (k: string) => (typeof input[k] === "string" ? (input[k] as string) : null);
   const cmd = str("command");
   if (cmd) return `${label} · ${cmd.slice(0, 40)}`;
@@ -157,7 +128,7 @@ function clearSession(agentId: string = CLAUDE_ID) {
 }
 
 export function registerHookHandlers(island: Island) {
-  void onEvent<HookPayload>("hook", (payload) => handleHook(island, payload));
+  void onEvent<HookPayload>(EVENT_NAMES.hook, (payload) => handleHook(island, payload));
 }
 
 function handleHook(island: Island, payload: HookPayload) {

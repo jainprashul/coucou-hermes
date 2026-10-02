@@ -1,145 +1,45 @@
 // App state — reactive state store for Coucou Hermes.
 
-import type { BotEmoteName, BotStateName, IslandMode, IslandViewName } from "./layout";
-import type { EyeShape } from "../mochi/engine";
+import type { BotStateName, IslandMode, IslandViewName } from "./layout";
+import {
+  INTEGRATION_AGENTS,
+  TOGGLEABLE_INTEGRATION_IDS,
+} from "./integrations";
+import {
+  DEFAULT_SETTINGS,
+  type AgentSource,
+  type AgentTask,
+  type ApprovalInfo,
+  type ClarifyInfo,
+  type ClarifyQuestion,
+  type ChatMessage,
+  type HermesConnectionStatus,
+  type IntegrationInfo,
+  type PillBadge,
+  type PromptContext,
+  type ResultItem,
+  type SearchResult,
+  type Settings,
+} from "./types";
 
-export type AgentSource = "hermes" | "claudeCode" | "n8n" | "agent";
-export type PillBadge = "approval" | "finished" | "error" | "question";
-
-export interface AgentTask {
-  id: string;
-  name: string;
-  color: string;
-  state: BotStateName;
-  stepIndex: number;
-  steps: string[];
-  source: AgentSource;
-  isIntegration: boolean;
-  emote?: BotEmoteName | null;
-  miniEye?: EyeShape | null;
-  pillBadge?: PillBadge | null;
-  sessionCwd?: string | null;
-}
-
-export interface ApprovalInfo {
-  requestId: string;
-  sessionId: string;
-  tool: string;
-  command: string;
-  description?: string;
-  choices?: string[];
-}
-
-export interface ClarifyQuestion {
-  qid: string;
-  question: string;
-  choices?: string[];
-  multiSelect?: boolean;
-}
-
-export interface ClarifyInfo {
-  requestId: string;
-  sessionId: string;
-  questions: ClarifyQuestion[];
-}
-
-export interface ChatMessage {
-  id: number;
-  role: "user" | "assistant";
-  content: string;
-}
-
-export type PromptContext =
-  | { kind: "window"; appName: string; title: string; url?: string }
-  | { kind: "file"; name: string; path?: string };
-
-export interface ResultItem {
-  label: string;
-  detail: string;
-  url?: string;
-}
-
-export interface SearchResult {
-  title: string;
-  items: ResultItem[];
-  note?: string;
-}
-
-export interface HermesConnectionStatus {
-  connected: boolean;
-  host: string;
-  lastError: string | null;
-}
-
-const task = (
-  id: string, name: string, color: string, source: AgentSource,
-): AgentTask => ({
-  id, name, color, state: "idle", stepIndex: 0, steps: [], source, isIntegration: true,
-});
-
-/** Default agents: Hermes Agent is primary, plus subagents and integrations. */
-export const INTEGRATION_AGENTS: AgentTask[] = [
-  task("integration_hermes", "Hermes Agent", "#FF6B5B", "hermes"),
-  task("subagent_antigravity", "Antigravity Worker", "#A78BFA", "agent"),
-  task("subagent_codex", "Codex Lane", "#38BDF8", "agent"),
-  task("integration_github", "GitHub", "#F4505E", "n8n"),
-  task("integration_vercel", "Vercel", "#7C5CFF", "n8n"),
-  task("integration_claude", "VS Code", "#F5F6F8", "claudeCode"),
-  task("integration_n8n", "n8n", "#F29B38", "n8n"),
-];
-
-export const TOGGLEABLE_INTEGRATION_IDS = [
-  "subagent_antigravity", "subagent_codex", "integration_github", "integration_vercel", "integration_n8n",
-];
-
-export interface IntegrationInfo {
-  data: Record<string, unknown>;
-  error: string | null;
-  loaded: boolean;
-  configured: boolean;
-}
-
-export interface Settings {
-  soundEnabled: boolean;
-  soundVolume: number;
-  autoCloseInterval: number;
-  absenceInterval: number;
-  activeIntegrations: string[];
-  screen: "primary" | "cursor";
-  autostart: boolean;
-  hooksInstalled: boolean;
-  model: string;
-
-  // Remote Hermes Gateway settings
-  gatewayUrl: string;
-  apiServerUrl: string;
-  authUsername: string;
-  autoConnect: boolean;
-  /** Accept Hermes outbound webhook POSTs (live island updates). */
-  webhookEnabled: boolean;
-  webhookPort: number;
-}
-
-export const DEFAULT_SETTINGS: Settings = {
-  soundEnabled: true,
-  soundVolume: 0.12,
-  autoCloseInterval: 15,
-  absenceInterval: 180,
-  activeIntegrations: [
-    "subagent_antigravity", "subagent_codex", "integration_github",
-  ],
-  screen: "primary",
-  autostart: false,
-  hooksInstalled: false,
-  model: "hermes-agent",
-
-  gatewayUrl: "http://h9-xpvm.taila48f73.ts.net:9119",
-  apiServerUrl: "http://h9-xpvm.taila48f73.ts.net:8642",
-  authUsername: "admin",
-  autoConnect: true,
-  webhookEnabled: true,
-  webhookPort: 19641,
+// Re-exported for existing consumers (types moved to ./types in Batch 1A).
+export type {
+  AgentSource,
+  AgentTask,
+  ApprovalInfo,
+  ClarifyInfo,
+  ClarifyQuestion,
+  ChatMessage,
+  HermesConnectionStatus,
+  IntegrationInfo,
+  PillBadge,
+  PromptContext,
+  ResultItem,
+  SearchResult,
+  Settings,
 };
+export { DEFAULT_SETTINGS };
+export { INTEGRATION_AGENTS, TOGGLEABLE_INTEGRATION_IDS };
 
 type Listener = () => void;
 

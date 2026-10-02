@@ -3,25 +3,19 @@
 // the pill isn't focused, plays a sound, and clears itself after 60 s.
 
 import { onEvent, Bridge, type IntegrationUpdate } from "../core/bridge";
+import { EVENT_NAMES } from "../core/events";
+import { INTEGRATION_CREDENTIAL_KEYS } from "../core/integrations";
 import { Sound } from "../core/sound";
 import { State } from "../core/state";
 import type { Island } from "./island";
 
 /** Which Credential Manager key backs each pill. */
-const KEY_FOR: Record<string, string> = {
-  integration_stripe: "stripe-api-key",
-  integration_github: "github-token",
-  integration_vercel: "vercel-token",
-  integration_n8n: "n8n-api-key",
-  integration_resend: "resend-api-key",
-  integration_notion: "notion-api-key",
-  integration_calcom: "calcom-api-key",
-};
+const KEY_FOR = INTEGRATION_CREDENTIAL_KEYS;
 
 const clearTimers = new Map<string, number>();
 
 export function registerIntegrationHandlers(island: Island) {
-  void onEvent<IntegrationUpdate>("integration", (update) => handle(island, update));
+  void onEvent<IntegrationUpdate>(EVENT_NAMES.integration, (update) => handle(island, update));
   void refreshConfigured();
 }
 

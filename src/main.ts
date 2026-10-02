@@ -2,6 +2,7 @@
 
 import "./style.css";
 import { Bridge, IS_TAURI, onEvent } from "./core/bridge";
+import { EVENT_NAMES } from "./core/events";
 import { Sound } from "./core/sound";
 import { State, type Settings } from "./core/state";
 import { Island } from "./island/island";
@@ -24,7 +25,7 @@ async function main() {
   island.applySettings();
   State.loadIntegrationTasks();
 
-  await onEvent<{ x: number; y: number }>("cursor", ({ x, y }) => island.onCursor(x, y));
+  await onEvent<{ x: number; y: number }>(EVENT_NAMES.cursor, ({ x, y }) => island.onCursor(x, y));
 
   /** Pause has to reach Rust too, or the pollers keep calling out. */
   const setPaused = (on: boolean) => {
@@ -33,7 +34,7 @@ async function main() {
     void Bridge.setPaused(on);
   };
 
-  await onEvent<string>("tray", (what) => {
+  await onEvent<string>(EVENT_NAMES.tray, (what) => {
     switch (what) {
       case "settings":
         setPaused(false);
@@ -51,10 +52,10 @@ async function main() {
     }
   });
 
-  await onEvent<null>("screen-changed", () => void Bridge.reposition());
+  await onEvent<null>(EVENT_NAMES.screenChanged, () => void Bridge.reposition());
 
   // The settings window writes preferences; apply them here without a restart.
-  await onEvent<Settings>("settings-changed", (s) => {
+  await onEvent<Settings>(EVENT_NAMES.settingsChanged, (s) => {
     State.settings = { ...State.settings, ...s };
     island.applySettings();
     State.loadIntegrationTasks();

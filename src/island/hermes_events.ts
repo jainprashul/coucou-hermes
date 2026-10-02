@@ -2,8 +2,11 @@
 // Handles live tool progress, subagent milestones, approvals, and clarify questions.
 
 import { Bridge, onEvent, type HermesApprovalEvent, type HermesClarifyEvent } from "../core/bridge";
+import { EVENT_NAMES } from "../core/events";
 import { Sound } from "../core/sound";
-import { State, type HermesConnectionStatus } from "../core/state";
+import { State } from "../core/state";
+import type { HermesConnectionStatus } from "../core/types";
+import { toolLabel } from "./toolLabels";
 import type { Island } from "./island";
 
 const HERMES_ID = "integration_hermes";
@@ -17,25 +20,8 @@ function clearHermesSession() {
   t.pillBadge = null;
 }
 
-const TOOL_LABELS: Record<string, string> = {
-  terminal: "Exécute",
-  execute_code: "Code Python",
-  patch: "Modifie",
-  write_file: "Écrit",
-  read_file: "Lit",
-  search_files: "Cherche",
-  web_search: "Recherche web",
-  web_extract: "Extrait page",
-  delegate_task: "Délègue tâche",
-  browser_exec: "Navigateur",
-  memory: "Mémoire",
-  skill_manage: "Compétence",
-  skill_view: "Consulte doc",
-  clarify: "Question",
-};
-
 function formatToolStep(toolName: string, args: Record<string, unknown> | null): string {
-  const label = TOOL_LABELS[toolName] ?? toolName;
+  const label = toolLabel(toolName);
   if (!args) return label;
 
   const getStr = (k: string) => (typeof args[k] === "string" ? (args[k] as string) : null);
@@ -121,7 +107,7 @@ export function registerHermesHandlers(island: Island) {
     State.notify();
   });
 
-  void onEvent<HermesConnectionStatus>("hermes-status", (status) => {
+  void onEvent<HermesConnectionStatus>(EVENT_NAMES.hermesStatus, (status) => {
     State.setHermesStatus(status);
     syncHermesIntegrationStatus(status);
     if (!status.connected && status.lastError) {
@@ -130,17 +116,17 @@ export function registerHermesHandlers(island: Island) {
   });
 
   // 2. Gateway general events
-  void onEvent<Record<string, unknown>>("hermes-event", (frame) => {
+  void onEvent<Record<string, unknown>>(EVENT_NAMES.hermesEvent, (frame) => {
     handleHermesEvent(island, frame);
   });
 
   // 3. Dangerous tool approvals
-  void onEvent<HermesApprovalEvent>("hermes-approval", (payload) => {
+  void onEvent<HermesApprovalEvent>(EVENT_NAMES.hermesApproval, (payload) => {
     handleHermesApproval(island, payload);
   });
 
   // 4. Clarify prompts
-  void onEvent<HermesClarifyEvent>("hermes-clarify", (payload) => {
+  void onEvent<HermesClarifyEvent>(EVENT_NAMES.hermesClarify, (payload) => {
     handleHermesClarify(island, payload);
   });
 }

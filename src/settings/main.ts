@@ -4,7 +4,12 @@
 
 import "./settings.css";
 import { Bridge, onEvent, type HookStatus } from "../core/bridge";
-import { DEFAULT_SETTINGS, type Settings } from "../core/state";
+import { EVENT_NAMES } from "../core/events";
+import {
+  INTEGRATIONS,
+  MAX_ACTIVE_INTEGRATIONS,
+} from "../core/integrations";
+import { DEFAULT_SETTINGS, type Settings } from "../core/types";
 import { h, clear } from "../views/dom";
 
 let settings: Settings = { ...DEFAULT_SETTINGS };
@@ -211,7 +216,7 @@ function hermesSection(
   };
 
   void Bridge.hermesStatus().then(applyStatus);
-  void onEvent<any>("hermes-status", applyStatus);
+  void onEvent<any>(EVENT_NAMES.hermesStatus, applyStatus);
 
   return section;
 }
@@ -431,43 +436,13 @@ function apiSection(hasKey: boolean): HTMLElement {
 
 // ── Integrations section ──────────────────────────────────────────────────────
 
-interface IntegrationDef {
-  id: string;
-  name: string;
-  color: string;
-  /** Credential Manager keys, in the order they are shown. */
-  fields: { key: string; label: string; placeholder: string; secret: boolean }[];
-}
-
-const INTEGRATIONS: IntegrationDef[] = [
-  { id: "integration_stripe", name: "Stripe", color: "#0570DE",
-    fields: [{ key: "stripe-api-key", label: "Secret key", placeholder: "sk_live_…", secret: true }] },
-  { id: "integration_github", name: "GitHub", color: "#F4505E",
-    fields: [{ key: "github-token", label: "Token", placeholder: "ghp_…", secret: true }] },
-  { id: "integration_vercel", name: "Vercel", color: "#7C5CFF",
-    fields: [{ key: "vercel-token", label: "Token", placeholder: "…", secret: true }] },
-  { id: "integration_n8n", name: "n8n", color: "#F29B38",
-    fields: [
-      { key: "n8n-url", label: "Instance URL", placeholder: "https://n8n.example.com", secret: false },
-      { key: "n8n-api-key", label: "API key", placeholder: "…", secret: true },
-    ] },
-  { id: "integration_resend", name: "Resend", color: "#22C55E",
-    fields: [{ key: "resend-api-key", label: "API key", placeholder: "re_…", secret: true }] },
-  { id: "integration_notion", name: "Notion", color: "#8C8C8C",
-    fields: [{ key: "notion-api-key", label: "Integration token", placeholder: "ntn_…", secret: true }] },
-  { id: "integration_calcom", name: "Cal.com", color: "#C9956A",
-    fields: [{ key: "calcom-api-key", label: "API key", placeholder: "cal_…", secret: true }] },
-];
-
-const MAX_ACTIVE = 4;
-
 function integrationsSection(present: Record<string, boolean>): HTMLElement {
   const note = h("div", { class: "hint" });
   const list = h("div", { style: "display:flex;flex-direction:column;gap:14px" });
 
   function updateNote() {
     const used = settings.activeIntegrations.length;
-    note.textContent = `Pick up to ${MAX_ACTIVE} pills to show next to Mochi — ${used}/${MAX_ACTIVE} in use. Keys are stored in the Windows Credential Manager, never on disk.`;
+    note.textContent = `Pick up to ${MAX_ACTIVE_INTEGRATIONS} pills to show next to Mochi — ${used}/${MAX_ACTIVE_INTEGRATIONS} in use. Keys are stored in the Windows Credential Manager, never on disk.`;
   }
 
   for (const def of INTEGRATIONS) {
@@ -478,7 +453,7 @@ function integrationsSection(present: Record<string, boolean>): HTMLElement {
       if (on) {
         settings.activeIntegrations = settings.activeIntegrations.filter((x) => x !== def.id);
       } else {
-        if (settings.activeIntegrations.length >= MAX_ACTIVE) return;
+        if (settings.activeIntegrations.length >= MAX_ACTIVE_INTEGRATIONS) return;
         settings.activeIntegrations = [...settings.activeIntegrations, def.id];
       }
       sw.classList.toggle("on", !on);
@@ -609,10 +584,7 @@ async function main() {
   const hasHermesApiKey = (await Bridge.secretPresent("hermes-api-key")) ?? false;
   const hasWebhookSecret = (await Bridge.secretPresent("hermes-webhook-secret")) ?? false;
 
-  const keys = [
-    "stripe-api-key", "github-token", "vercel-token",
-    "n8n-url", "n8n-api-key", "resend-api-key", "notion-api-key", "calcom-api-key",
-  ];
+  const keys = [...new Set(INTEGRATIONS.flatMap((def) => def.fields.map((f) => f.key)))];
   const present: Record<string, boolean> = {};
   for (const k of keys) present[k] = (await Bridge.secretPresent(k)) ?? false;
 
@@ -630,7 +602,7 @@ async function main() {
     }),
   );
 
-  void onEvent<Settings>("settings-changed", (s) => {
+  void onEvent<Settings>(EVENT_NAMES.settingsChanged, (s) => {
     settings = { ...settings, ...s };
   });
 }
