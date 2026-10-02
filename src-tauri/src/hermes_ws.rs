@@ -3,7 +3,7 @@
 // Connects to Hermes Agent Gateway (`ws://<host>:9119/api/ws`) over Tailscale/LAN.
 // Handles JSON-RPC 2.0 two-way communication:
 //   - capabilities handshake (`server_requests: true`)
-//   - session.resume / session.subscribe
+//   - session.resume / session.list
 //   - real-time tool progress & reasoning events
 //   - server requests: tool approvals (allow once/always/deny) & clarify questions
 //   - multi-agent & subagent event tracking (Antigravity, Codex, delegate_task)
@@ -79,6 +79,7 @@ pub struct HermesClientState {
     generation: AtomicU64,
     loop_task: Mutex<Option<tauri::async_runtime::JoinHandle<()>>>,
     last_session_id: Mutex<Option<String>>,
+    pending_list_id: Mutex<Option<u64>>,
 }
 
 impl Default for HermesClientState {
@@ -94,6 +95,7 @@ impl Default for HermesClientState {
             generation: AtomicU64::new(0),
             loop_task: Mutex::new(None),
             last_session_id: Mutex::new(None),
+            pending_list_id: Mutex::new(None),
         }
     }
 }
@@ -425,44 +427,113 @@ async fn connect_and_run(
     Ok(())
 }
 
-fn send_capabilities(tx: &mpsc::UnboundedSender<String>, state: &HermesClientState) {
-    let caps_id = state.counter.fetch_add(1, Ordering::Relaxed);
-    let caps_frame = json!({
+fn build_capabilities_frame(id: u64) -> Value {
+    json!({
         "jsonrpc": "2.0",
         "method": "client.capabilities",
         "params": {
-            "server_requests": true,
-            "tool_progress": true,
-            "subagent_tree": true
+            "server_requests": true
         },
-        "id": caps_id
+        "id": id
     })
-    .to_string();
-    let _ = tx.send(caps_frame);
 }
 
-fn send_session_handshake(tx: &mpsc::UnboundedSender<String>, state: &HermesClientState) {
-    let id = state.counter.fetch_add(1, Ordering::Relaxed);
-    let session_id = state.last_session_id.lock().unwrap().clone();
-    let frame = if let Some(sid) = session_id {
+fn build_session_handshake_frame(id: u64, session_id: Option<&str>) -> Value {
+    if let Some(sid) = session_id {
         json!({
             "jsonrpc": "2.0",
             "method": "session.resume",
             "params": { "session_id": sid },
             "id": id
         })
-        .to_string()
     } else {
-        // Broaden subscription until a concrete session id is known.
         json!({
             "jsonrpc": "2.0",
-            "method": "session.subscribe",
-            "params": { "events": true },
+            "method": "session.list",
+            "params": {},
             "id": id
         })
-        .to_string()
-    };
+    }
+}
+
+fn send_capabilities(tx: &mpsc::UnboundedSender<String>, state: &HermesClientState) {
+    let caps_id = state.counter.fetch_add(1, Ordering::Relaxed);
+    let caps_frame = build_capabilities_frame(caps_id).to_string();
+    let _ = tx.send(caps_frame);
+}
+
+fn send_session_handshake(tx: &mpsc::UnboundedSender<String>, state: &HermesClientState) {
+    let id = state.counter.fetch_add(1, Ordering::Relaxed);
+    let session_id = state.last_session_id.lock().unwrap().clone();
+    if session_id.is_none() {
+        *state.pending_list_id.lock().unwrap() = Some(id);
+    }
+    let frame = build_session_handshake_frame(id, session_id.as_deref()).to_string();
     let _ = tx.send(frame);
+}
+
+fn pick_recent_session_id(result_val: &Value) -> Option<String> {
+    let sessions = result_val
+        .get("sessions")
+        .or_else(|| result_val.get("data"))
+        .and_then(Value::as_array)
+        .or_else(|| result_val.as_array())?;
+
+    if sessions.is_empty() {
+        return None;
+    }
+
+    let is_ended = |entry: &Value| -> bool {
+        match entry.get("ended_at") {
+            None | Some(Value::Null) => false,
+            Some(Value::Bool(b)) => *b,
+            Some(Value::String(s)) => !s.is_empty(),
+            Some(Value::Number(n)) => n.as_f64().map(|v| v > 0.0).unwrap_or(false),
+            _ => false,
+        }
+    };
+
+    let get_activity_time = |entry: &Value| -> f64 {
+        entry
+            .get("last_active")
+            .and_then(|v| v.as_f64().or_else(|| v.as_str().and_then(|s| s.parse::<f64>().ok())))
+            .or_else(|| {
+                entry
+                    .get("started_at")
+                    .and_then(|v| v.as_f64().or_else(|| v.as_str().and_then(|s| s.parse::<f64>().ok())))
+            })
+            .unwrap_or(0.0)
+    };
+
+    let non_ended: Vec<&Value> = sessions.iter().filter(|s| !is_ended(s)).collect();
+    let candidates = if !non_ended.is_empty() {
+        non_ended
+    } else {
+        sessions.iter().collect()
+    };
+
+    let chosen = candidates
+        .into_iter()
+        .fold(None, |acc: Option<&Value>, item| match acc {
+            None => Some(item),
+            Some(best) => {
+                let t_best = get_activity_time(best);
+                let t_item = get_activity_time(item);
+                if t_item > t_best {
+                    Some(item)
+                } else {
+                    Some(best)
+                }
+            }
+        });
+
+    chosen
+        .and_then(|s| s.get("id"))
+        .and_then(|v| {
+            v.as_str()
+                .map(str::to_string)
+                .or_else(|| v.as_u64().map(|n| n.to_string()))
+        })
 }
 
 /// Returns true if this frame was (or contained) `gateway.ready`.
@@ -478,6 +549,40 @@ async fn handle_incoming_text(
     };
 
     remember_session_from_value(state, &val);
+
+    // If this is the result of our fallback session.list request, resume the most recent session.
+    let id_opt = val
+        .get("id")
+        .and_then(|v| v.as_u64().or_else(|| v.as_str().and_then(|s| s.parse::<u64>().ok())));
+    if let Some(id) = id_opt {
+        let is_list_reply = {
+            let mut pending = state.pending_list_id.lock().unwrap();
+            if *pending == Some(id) {
+                *pending = None;
+                true
+            } else {
+                false
+            }
+        };
+
+        if is_list_reply {
+            if let Some(result_obj) = val.get("result") {
+                if let Some(sid) = pick_recent_session_id(result_obj) {
+                    state.remember_session_id(&sid);
+                    log::line(format!("hermes resumed session from session.list: {sid}"));
+                    let resume_id = state.counter.fetch_add(1, Ordering::Relaxed);
+                    let resume_frame = json!({
+                        "jsonrpc": "2.0",
+                        "method": "session.resume",
+                        "params": { "session_id": sid },
+                        "id": resume_id
+                    })
+                    .to_string();
+                    let _ = tx_outgoing.send(resume_frame);
+                }
+            }
+        }
+    }
 
     let mut saw_ready = frame_is_gateway_ready(&val);
 
@@ -864,4 +969,114 @@ fn base64_simple(input: &[u8]) -> String {
         i += 3;
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_capabilities_frame_params_only_server_requests() {
+        let frame = build_capabilities_frame(1);
+        assert_eq!(frame.get("jsonrpc").and_then(Value::as_str), Some("2.0"));
+        assert_eq!(frame.get("method").and_then(Value::as_str), Some("client.capabilities"));
+        assert_eq!(frame.get("id").and_then(Value::as_u64), Some(1));
+
+        let params = frame.get("params").and_then(Value::as_object).expect("params is object");
+        assert_eq!(params.len(), 1, "params must contain exactly one key");
+        assert_eq!(params.get("server_requests"), Some(&Value::Bool(true)));
+        assert_eq!(params.get("tool_progress"), None);
+        assert_eq!(params.get("subagent_tree"), None);
+    }
+
+    #[test]
+    fn test_send_capabilities_serialized_frame() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let state = HermesClientState::default();
+        send_capabilities(&tx, &state);
+
+        let raw = rx.try_recv().expect("send_capabilities should send a frame");
+        let val: Value = serde_json::from_str(&raw).expect("valid json");
+
+        assert_eq!(val["jsonrpc"], "2.0");
+        assert_eq!(val["method"], "client.capabilities");
+        let params = val["params"].as_object().expect("params object");
+        assert_eq!(params.len(), 1);
+        assert_eq!(params.get("server_requests"), Some(&Value::Bool(true)));
+        assert_eq!(params.get("tool_progress"), None);
+        assert_eq!(params.get("subagent_tree"), None);
+    }
+
+    #[test]
+    fn test_fallback_session_handshake_is_session_list() {
+        let frame = build_session_handshake_frame(2, None);
+        assert_eq!(frame.get("jsonrpc").and_then(Value::as_str), Some("2.0"));
+        assert_eq!(frame.get("method").and_then(Value::as_str), Some("session.list"));
+        assert_ne!(frame.get("method").and_then(Value::as_str), Some("session.subscribe"));
+        let params = frame.get("params").and_then(Value::as_object).expect("params is object");
+        assert!(params.is_empty(), "fallback params should be empty");
+    }
+
+    #[test]
+    fn test_send_session_handshake_fallback_and_resume() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let state = HermesClientState::default();
+
+        // 1. Fallback when session_id is None: sends session.list and records pending_list_id
+        send_session_handshake(&tx, &state);
+        let raw_fallback = rx.try_recv().expect("handshake frame sent");
+        let val_fallback: Value = serde_json::from_str(&raw_fallback).expect("valid json");
+
+        assert_eq!(val_fallback["method"], "session.list");
+        assert_ne!(val_fallback["method"], "session.subscribe");
+        let params = val_fallback["params"].as_object().expect("params object");
+        assert!(params.is_empty(), "fallback params should be empty");
+        let list_id = val_fallback["id"].as_u64().unwrap();
+        assert_eq!(*state.pending_list_id.lock().unwrap(), Some(list_id));
+
+        // 2. Known session_id path: sends session.resume
+        state.remember_session_id("sess-abc-123");
+        send_session_handshake(&tx, &state);
+        let raw_resume = rx.try_recv().expect("resume frame sent");
+        let val_resume: Value = serde_json::from_str(&raw_resume).expect("valid json");
+
+        assert_eq!(val_resume["method"], "session.resume");
+        assert_ne!(val_resume["method"], "session.subscribe");
+        assert_eq!(val_resume["params"]["session_id"], "sess-abc-123");
+    }
+
+    #[test]
+    fn test_pick_recent_session_id() {
+        // Non-ended sessions with timestamps
+        let result = json!({
+            "sessions": [
+                { "id": "s_old", "last_active": 100.0 },
+                { "id": "s_ended", "ended_at": 500.0, "last_active": 400.0 },
+                { "id": "s_new", "last_active": 300.0 }
+            ]
+        });
+        assert_eq!(pick_recent_session_id(&result).as_deref(), Some("s_new"));
+
+        // Live gateway format without ended_at or last_active
+        let result_live = json!({
+            "sessions": [
+                { "id": "20261002_104227_d70b0d6b", "title": "Run Hermes hook", "started_at": 1790952147.97 },
+                { "id": "api-414ed9885e13e61f", "title": "Other", "started_at": 1790950000.0 }
+            ]
+        });
+        assert_eq!(pick_recent_session_id(&result_live).as_deref(), Some("20261002_104227_d70b0d6b"));
+
+        // All ended sessions fall back to the first
+        let result_all_ended = json!({
+            "sessions": [
+                { "id": "s_ended_1", "ended_at": 100 },
+                { "id": "s_ended_2", "ended_at": 200 }
+            ]
+        });
+        assert_eq!(pick_recent_session_id(&result_all_ended).as_deref(), Some("s_ended_1"));
+
+        // Empty sessions
+        let result_empty = json!({ "sessions": [] });
+        assert_eq!(pick_recent_session_id(&result_empty), None);
+    }
 }
