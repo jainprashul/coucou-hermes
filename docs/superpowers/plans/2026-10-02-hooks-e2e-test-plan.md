@@ -124,3 +124,16 @@ hermes dashboard --host 0.0.0.0 --port 9119 --skip-build --no-open   # /api/ws
   cargo check --target x86_64-pc-windows-gnu                          # compile
 npm run build:ui                                                      # tsc
 ```
+
+## Compile status (2026-10-02, after pull)
+- `npm run build:ui` (tsc --noEmit + vite): **PASS**, clean
+- `cargo build --target x86_64-pc-windows-gnu -p coucou-hook` (debug + release):
+  **PASS** (release exe 333 KB; harmless mingw `.drectve` linker note)
+- `cargo check --target x86_64-pc-windows-gnu` (full app, hook resource staged
+  at `target/release/coucou-hook.exe` — the resource path is hardcoded in
+  `tauri.conf.json`): **PASS**, one pre-existing dead-code warning
+  (`DEFAULT_MODEL` in `claude.rs:23`, unrelated to the new commits)
+- `cargo test` is not runnable on the VM (Windows-only `windows` crate
+  imports) → unit tests must run on Prashul's PC or CI.
+- Note: cross-compile verifies syntax/types but not runtime behavior —
+  Phase 3 (manual E2E) is still required for the WS integration.
