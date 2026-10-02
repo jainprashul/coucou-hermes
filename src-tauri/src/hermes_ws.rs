@@ -19,24 +19,20 @@ use serde_json::{json, Value};
 use tauri::{AppHandle, Emitter};
 use tokio::sync::{mpsc, oneshot};
 use tokio_tungstenite::connect_async;
-use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::Message;
 
 use crate::events;
 use crate::island::WINDOW_LABEL;
 use crate::log;
-use crate::util::base64;
 
 #[path = "hermes_ws/mod.rs"]
 pub mod helpers;
 
 pub use helpers::*;
 
-
 const RECONNECT_BASE_MS: u64 = 1000;
 const RECONNECT_MAX_MS: u64 = 10000;
 const PING_INTERVAL_SECS: u64 = 15;
-const ACK_TIMEOUT_MS: u64 = 800;
 const CONNECT_TIMEOUT_SECS: u64 = 10;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -47,47 +43,19 @@ pub struct ConnectionStatus {
     pub last_error: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ApprovalPayload {
-    pub request_id: String,
-    pub session_id: String,
-    pub command: String,
-    pub description: String,
-    pub tool_name: Option<String>,
-    pub choices: Vec<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ClarifyQuestion {
-    pub qid: String,
-    pub question: String,
-    pub choices: Option<Vec<String>>,
-    pub multi_select: bool,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ClarifyPayload {
-    pub request_id: String,
-    pub session_id: String,
-    pub questions: Vec<ClarifyQuestion>,
-}
-
 pub struct HermesClientState {
-    tx_outgoing: Mutex<Option<mpsc::UnboundedSender<String>>>,
-    pending_approvals: Arc<Mutex<HashMap<String, oneshot::Sender<String>>>>,
-    pending_clarifies: Arc<Mutex<HashMap<String, oneshot::Sender<Value>>>>,
-    is_connected: AtomicBool,
-    active_host: Mutex<String>,
-    last_error: Mutex<Option<String>>,
-    counter: AtomicU64,
+    pub(crate) tx_outgoing: Mutex<Option<mpsc::UnboundedSender<String>>>,
+    pub(crate) pending_approvals: Arc<Mutex<HashMap<String, oneshot::Sender<String>>>>,
+    pub(crate) pending_clarifies: Arc<Mutex<HashMap<String, oneshot::Sender<Value>>>>,
+    pub(crate) is_connected: AtomicBool,
+    pub(crate) active_host: Mutex<String>,
+    pub(crate) last_error: Mutex<Option<String>>,
+    pub(crate) counter: AtomicU64,
     /// Bumped on every `start_gateway_connection` so older reconnect loops exit.
-    generation: AtomicU64,
-    loop_task: Mutex<Option<tauri::async_runtime::JoinHandle<()>>>,
-    last_session_id: Mutex<Option<String>>,
-    pending_list_id: Mutex<Option<u64>>,
+    pub(crate) generation: AtomicU64,
+    pub(crate) loop_task: Mutex<Option<tauri::async_runtime::JoinHandle<()>>>,
+    pub(crate) last_session_id: Mutex<Option<String>>,
+    pub(crate) pending_list_id: Mutex<Option<u64>>,
 }
 
 impl Default for HermesClientState {
@@ -149,35 +117,11 @@ impl HermesClientState {
     }
 
     pub fn decide_approval(&self, request_id: &str, choice: &str) -> bool {
-        if let Some(tx) = self.pending_approvals.lock().unwrap().remove(request_id) {
-            let _ = tx.send(choice.to_string());
-            return true;
-        }
-        let gateway_choice = match choice {
-            "allow" => "once",
-            other => other,
-        };
-        self.send_rpc_request(
-            "approval.respond",
-            json!({
-                "request_id": request_id,
-                "choice": gateway_choice,
-            }),
-        )
+        helpers::requests::decide_approval(self, request_id, choice)
     }
 
     pub fn answer_clarify(&self, request_id: &str, answers: Value) -> bool {
-        if let Some(tx) = self.pending_clarifies.lock().unwrap().remove(request_id) {
-            let _ = tx.send(answers);
-            return true;
-        }
-        self.send_rpc_request(
-            "clarify.respond",
-            json!({
-                "request_id": request_id,
-                "answer": answers,
-            }),
-        )
+        helpers::requests::answer_clarify(self, request_id, answers)
     }
 }
 
@@ -256,96 +200,7 @@ async fn connect_and_run(
     auth_user: Option<&str>,
     auth_pass: Option<&str>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let ws_url = if url_str.starts_with("http://") {
-        format!("ws://{}/api/ws", &url_str[7..].trim_end_matches('/'))
-    } else if url_str.starts_with("https://") {
-        format!("wss://{}/api/ws", &url_str[8..].trim_end_matches('/'))
-    } else if !url_str.starts_with("ws://") && !url_str.starts_with("wss://") {
-        format!("ws://{}/api/ws", url_str.trim_end_matches('/'))
-    } else if !url_str.contains("/api/ws") {
-        format!("{}/api/ws", url_str.trim_end_matches('/'))
-    } else {
-        url_str.to_string()
-    };
-
-    let mut final_ws_url = ws_url.clone();
-    if let (Some(u), Some(p)) = (auth_user, auth_pass) {
-        if !u.is_empty() && !p.is_empty() {
-            let http_base = if url_str.starts_with("wss://") {
-                format!("https://{}", &url_str[6..].trim_end_matches('/'))
-            } else if url_str.starts_with("ws://") {
-                format!("http://{}", &url_str[5..].trim_end_matches('/'))
-            } else if url_str.starts_with("http://") || url_str.starts_with("https://") {
-                url_str.trim_end_matches('/').to_string()
-            } else {
-                format!("http://{}", url_str.trim_end_matches('/'))
-            };
-
-            let login_url = format!("{http_base}/auth/password-login");
-            log::line(format!("hermes password-login gen={gen} → {login_url}"));
-            let http_client = reqwest::Client::builder()
-                .timeout(Duration::from_secs(10))
-                .build()?;
-            let body = json!({
-                "provider": "basic",
-                "username": u,
-                "password": p
-            });
-
-            match http_client.post(&login_url).json(&body).send().await {
-                Ok(resp) => {
-                    let status = resp.status();
-                    if status.is_success() {
-                        let mut got_token = false;
-                        for cookie in resp.headers().get_all(reqwest::header::SET_COOKIE) {
-                            if let Ok(cookie_str) = cookie.to_str() {
-                                if let Some(pos) = cookie_str.find("hermes_session_at=") {
-                                    let rest = &cookie_str[pos + 18..];
-                                    let token_raw = rest
-                                        .split(';')
-                                        .next()
-                                        .unwrap_or("")
-                                        .trim()
-                                        .trim_matches('"');
-                                    if !token_raw.is_empty() {
-                                        final_ws_url = if final_ws_url.contains('?') {
-                                            format!("{final_ws_url}&token={token_raw}")
-                                        } else {
-                                            format!("{final_ws_url}?token={token_raw}")
-                                        };
-                                        got_token = true;
-                                        break;
-                                    }
-                                }
-                            }
-                        }
-                        log::line(format!(
-                            "hermes password-login ok gen={gen} token={}",
-                            if got_token { "yes" } else { "no" }
-                        ));
-                    } else {
-                        log::line(format!("hermes password-login failed gen={gen} status={status}"));
-                    }
-                }
-                Err(err) => {
-                    log::line(format!("hermes password-login error gen={gen}: {err}"));
-                }
-            }
-        }
-    }
-
-    let mut req = final_ws_url.into_client_request()?;
-    if let (Some(u), Some(p)) = (auth_user, auth_pass) {
-        if !u.is_empty() {
-            use std::io::Write;
-            let mut auth_bytes = Vec::new();
-            let _ = write!(auth_bytes, "{u}:{p}");
-            let encoded = base64::encode(&auth_bytes);
-            if let Ok(val) = format!("Basic {encoded}").parse() {
-                req.headers_mut().insert("Authorization", val);
-            }
-        }
-    }
+    let req = build_ws_request(url_str, auth_user, auth_pass, gen).await?;
 
     log::line(format!("hermes ws handshake gen={gen} (timeout {CONNECT_TIMEOUT_SECS}s)"));
     let (ws_stream, _) = tokio::time::timeout(
@@ -435,7 +290,6 @@ async fn connect_and_run(
     Ok(())
 }
 
-
 fn send_capabilities(tx: &mpsc::UnboundedSender<String>, state: &HermesClientState) {
     let caps_id = state.counter.fetch_add(1, Ordering::Relaxed);
     let caps_frame = build_capabilities_frame(caps_id).to_string();
@@ -451,7 +305,6 @@ fn send_session_handshake(tx: &mpsc::UnboundedSender<String>, state: &HermesClie
     let frame = build_session_handshake_frame(id, session_id.as_deref()).to_string();
     let _ = tx.send(frame);
 }
-
 
 /// Returns true if this frame was (or contained) `gateway.ready`.
 async fn handle_incoming_text(
@@ -550,249 +403,6 @@ async fn handle_incoming_text(
     }
     let _ = app.emit_to(WINDOW_LABEL, events::HERMES_EVENT, val);
     saw_ready
-}
-
-
-fn send_approval_ack(tx: &mpsc::UnboundedSender<String>, id: &Value) {
-    // Spec: acknowledge within 800ms so the gateway knows a UI is alive.
-    // Prefer a lightweight notification the gateway can ignore if unused.
-    let ack = json!({
-        "jsonrpc": "2.0",
-        "method": "approval_ack",
-        "params": {
-            "id": id,
-            "ok": true
-        }
-    })
-    .to_string();
-    let _ = tx.send(ack);
-    // Also try JSON-RPC progress-style ack keyed by request id (compatible fallback).
-    let ack2 = json!({
-        "jsonrpc": "2.0",
-        "method": "approval.ack",
-        "params": { "request_id": id, "ok": true }
-    })
-    .to_string();
-    let _ = tx.send(ack2);
-    let _ = ACK_TIMEOUT_MS; // documented budget — ack is sent immediately
-}
-
-async fn handle_approval_request(
-    app: &AppHandle,
-    state: &Arc<HermesClientState>,
-    tx_outgoing: &mpsc::UnboundedSender<String>,
-    id_val: Option<Value>,
-    params: Value,
-) {
-    let Some(id) = id_val else {
-        log::line("hermes approval request missing id — ignored");
-        return;
-    };
-    let req_id_str = json_rpc_id_string(&id);
-
-    // Acknowledge immediately (within ACK_TIMEOUT_MS budget).
-    send_approval_ack(tx_outgoing, &id);
-    log::line(format!("hermes approval_ack sent for {req_id_str}"));
-
-    let nested = params
-        .get("params")
-        .cloned()
-        .unwrap_or_else(|| params.clone());
-    let body = if nested.get("command").is_some() || nested.get("tool_name").is_some() {
-        nested
-    } else {
-        params
-    };
-
-    let session_id = body
-        .get("session_id")
-        .and_then(Value::as_str)
-        .unwrap_or_default()
-        .to_string();
-    state.remember_session_id(&session_id);
-
-    let command = body
-        .get("command")
-        .and_then(Value::as_str)
-        .unwrap_or_default()
-        .to_string();
-    let description = body
-        .get("description")
-        .and_then(Value::as_str)
-        .unwrap_or_default()
-        .to_string();
-    let tool_name = body
-        .get("tool_name")
-        .and_then(Value::as_str)
-        .map(str::to_string);
-    let choices = body
-        .get("choices")
-        .and_then(Value::as_array)
-        .map(|arr| {
-            arr.iter()
-                .filter_map(Value::as_str)
-                .map(str::to_string)
-                .collect()
-        })
-        .unwrap_or_else(|| vec!["once".into(), "always".into(), "deny".into()]);
-
-    let (tx_decision, rx_decision) = oneshot::channel::<String>();
-    state
-        .pending_approvals
-        .lock()
-        .unwrap()
-        .insert(req_id_str.clone(), tx_decision);
-
-    let payload = ApprovalPayload {
-        request_id: req_id_str.clone(),
-        session_id,
-        command,
-        description,
-        tool_name,
-        choices,
-    };
-
-    let _ = app.emit_to(WINDOW_LABEL, events::HERMES_APPROVAL, payload);
-
-    let tx_out = tx_outgoing.clone();
-    let pending_map = state.pending_approvals.clone();
-
-    tauri::async_runtime::spawn(async move {
-        let decision = match tokio::time::timeout(Duration::from_secs(108), rx_decision).await {
-            Ok(Ok(d)) => d,
-            _ => "deny".to_string(),
-        };
-
-        pending_map.lock().unwrap().remove(&req_id_str);
-        log::line(format!("hermes approval reply {req_id_str} → {decision}"));
-
-        let response = json!({
-            "jsonrpc": "2.0",
-            "id": id,
-            "result": {
-                "choice": decision
-            }
-        })
-        .to_string();
-
-        let _ = tx_out.send(response);
-    });
-}
-
-async fn handle_clarify_request(
-    app: &AppHandle,
-    state: &Arc<HermesClientState>,
-    tx_outgoing: &mpsc::UnboundedSender<String>,
-    id_val: Option<Value>,
-    params: Value,
-) {
-    let Some(id) = id_val else {
-        log::line("hermes clarify request missing id — ignored");
-        return;
-    };
-    let req_id_str = json_rpc_id_string(&id);
-
-    // Lightweight ack so gated gateways know a UI is listening.
-    let ack = json!({
-        "jsonrpc": "2.0",
-        "method": "clarify.ack",
-        "params": { "request_id": id.clone(), "ok": true }
-    })
-    .to_string();
-    let _ = tx_outgoing.send(ack);
-    log::line(format!("hermes clarify.ack sent for {req_id_str}"));
-
-    let nested = params
-        .get("params")
-        .cloned()
-        .unwrap_or_else(|| params.clone());
-    let body = if nested.get("questions").is_some() {
-        nested
-    } else {
-        params
-    };
-
-    let session_id = body
-        .get("session_id")
-        .and_then(Value::as_str)
-        .unwrap_or_default()
-        .to_string();
-    state.remember_session_id(&session_id);
-
-    let questions_arr = body.get("questions").and_then(Value::as_array);
-
-    let mut questions = Vec::new();
-    if let Some(arr) = questions_arr {
-        for q in arr {
-            let qid = q
-                .get("qid")
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-                .to_string();
-            let question = q
-                .get("question")
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-                .to_string();
-            let multi_select = q
-                .get("multi_select")
-                .and_then(Value::as_bool)
-                .unwrap_or(false);
-            let choices = q.get("choices").and_then(Value::as_array).map(|c_arr| {
-                c_arr
-                    .iter()
-                    .filter_map(Value::as_str)
-                    .map(str::to_string)
-                    .collect()
-            });
-
-            questions.push(ClarifyQuestion {
-                qid,
-                question,
-                choices,
-                multi_select,
-            });
-        }
-    }
-
-    let (tx_answers, rx_answers) = oneshot::channel::<Value>();
-    state
-        .pending_clarifies
-        .lock()
-        .unwrap()
-        .insert(req_id_str.clone(), tx_answers);
-
-    let payload = ClarifyPayload {
-        request_id: req_id_str.clone(),
-        session_id,
-        questions,
-    };
-
-    let _ = app.emit_to(WINDOW_LABEL, events::HERMES_CLARIFY, payload);
-
-    let tx_out = tx_outgoing.clone();
-    let pending_map = state.pending_clarifies.clone();
-
-    tauri::async_runtime::spawn(async move {
-        let answers = match tokio::time::timeout(Duration::from_secs(300), rx_answers).await {
-            Ok(Ok(ans)) => ans,
-            _ => json!({}),
-        };
-
-        pending_map.lock().unwrap().remove(&req_id_str);
-        log::line(format!("hermes clarify reply {req_id_str}"));
-
-        let response = json!({
-            "jsonrpc": "2.0",
-            "id": id,
-            "result": {
-                "answers": answers
-            }
-        })
-        .to_string();
-
-        let _ = tx_out.send(response);
-    });
 }
 
 #[cfg(test)]
