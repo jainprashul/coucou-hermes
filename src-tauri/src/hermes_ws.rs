@@ -27,6 +27,12 @@ use crate::island::WINDOW_LABEL;
 use crate::log;
 use crate::util::base64;
 
+#[path = "hermes_ws/mod.rs"]
+pub mod helpers;
+
+pub use helpers::*;
+
+
 const RECONNECT_BASE_MS: u64 = 1000;
 const RECONNECT_MAX_MS: u64 = 10000;
 const PING_INTERVAL_SECS: u64 = 15;
@@ -429,34 +435,6 @@ async fn connect_and_run(
     Ok(())
 }
 
-fn build_capabilities_frame(id: u64) -> Value {
-    json!({
-        "jsonrpc": "2.0",
-        "method": "client.capabilities",
-        "params": {
-            "server_requests": true
-        },
-        "id": id
-    })
-}
-
-fn build_session_handshake_frame(id: u64, session_id: Option<&str>) -> Value {
-    if let Some(sid) = session_id {
-        json!({
-            "jsonrpc": "2.0",
-            "method": "session.resume",
-            "params": { "session_id": sid },
-            "id": id
-        })
-    } else {
-        json!({
-            "jsonrpc": "2.0",
-            "method": "session.list",
-            "params": {},
-            "id": id
-        })
-    }
-}
 
 fn send_capabilities(tx: &mpsc::UnboundedSender<String>, state: &HermesClientState) {
     let caps_id = state.counter.fetch_add(1, Ordering::Relaxed);
@@ -474,69 +452,6 @@ fn send_session_handshake(tx: &mpsc::UnboundedSender<String>, state: &HermesClie
     let _ = tx.send(frame);
 }
 
-fn pick_recent_session_id(result_val: &Value) -> Option<String> {
-    let sessions = result_val
-        .get("sessions")
-        .or_else(|| result_val.get("data"))
-        .and_then(Value::as_array)
-        .or_else(|| result_val.as_array())?;
-
-    if sessions.is_empty() {
-        return None;
-    }
-
-    let is_ended = |entry: &Value| -> bool {
-        match entry.get("ended_at") {
-            None | Some(Value::Null) => false,
-            Some(Value::Bool(b)) => *b,
-            Some(Value::String(s)) => !s.is_empty(),
-            Some(Value::Number(n)) => n.as_f64().map(|v| v > 0.0).unwrap_or(false),
-            _ => false,
-        }
-    };
-
-    let get_activity_time = |entry: &Value| -> f64 {
-        entry
-            .get("last_active")
-            .and_then(|v| v.as_f64().or_else(|| v.as_str().and_then(|s| s.parse::<f64>().ok())))
-            .or_else(|| {
-                entry
-                    .get("started_at")
-                    .and_then(|v| v.as_f64().or_else(|| v.as_str().and_then(|s| s.parse::<f64>().ok())))
-            })
-            .unwrap_or(0.0)
-    };
-
-    let non_ended: Vec<&Value> = sessions.iter().filter(|s| !is_ended(s)).collect();
-    let candidates = if !non_ended.is_empty() {
-        non_ended
-    } else {
-        sessions.iter().collect()
-    };
-
-    let chosen = candidates
-        .into_iter()
-        .fold(None, |acc: Option<&Value>, item| match acc {
-            None => Some(item),
-            Some(best) => {
-                let t_best = get_activity_time(best);
-                let t_item = get_activity_time(item);
-                if t_item > t_best {
-                    Some(item)
-                } else {
-                    Some(best)
-                }
-            }
-        });
-
-    chosen
-        .and_then(|s| s.get("id"))
-        .and_then(|v| {
-            v.as_str()
-                .map(str::to_string)
-                .or_else(|| v.as_u64().map(|n| n.to_string()))
-        })
-}
 
 /// Returns true if this frame was (or contained) `gateway.ready`.
 async fn handle_incoming_text(
@@ -637,60 +552,6 @@ async fn handle_incoming_text(
     saw_ready
 }
 
-fn server_request_kind(params: &Value) -> Option<&'static str> {
-    let ty = params
-        .get("type")
-        .and_then(Value::as_str)
-        .or_else(|| params.get("method").and_then(Value::as_str))
-        .or_else(|| params.get("request").and_then(Value::as_str))?;
-    match ty {
-        "approval" => Some("approval"),
-        "clarify" => Some("clarify"),
-        _ => None,
-    }
-}
-
-fn frame_is_gateway_ready(val: &Value) -> bool {
-    if val.get("method").and_then(Value::as_str) == Some("gateway.ready") {
-        return true;
-    }
-    event_type_from_frame(val).map(|t| t == "gateway.ready").unwrap_or(false)
-}
-
-fn event_type_from_frame(val: &Value) -> Option<&str> {
-    let params = val.get("params")?;
-    if val.get("method").and_then(Value::as_str) == Some("event") {
-        return params.get("type").and_then(Value::as_str);
-    }
-    params.get("type").and_then(Value::as_str)
-}
-
-fn remember_session_from_value(state: &HermesClientState, val: &Value) {
-    let candidates = [
-        val.get("session_id").and_then(Value::as_str),
-        val.get("params")
-            .and_then(|p| p.get("session_id"))
-            .and_then(Value::as_str),
-        val.get("params")
-            .and_then(|p| p.get("payload"))
-            .and_then(|p| p.get("session_id"))
-            .and_then(Value::as_str),
-        val.get("result")
-            .and_then(|p| p.get("session_id"))
-            .and_then(Value::as_str),
-    ];
-    for sid in candidates.into_iter().flatten() {
-        state.remember_session_id(sid);
-    }
-}
-
-fn json_rpc_id_string(id: &Value) -> String {
-    match id {
-        Value::String(s) => s.clone(),
-        Value::Number(n) => n.to_string(),
-        _ => "req".to_string(),
-    }
-}
 
 fn send_approval_ack(tx: &mpsc::UnboundedSender<String>, id: &Value) {
     // Spec: acknowledge within 800ms so the gateway knows a UI is alive.

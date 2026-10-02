@@ -5,6 +5,7 @@ mod events;
 mod files;
 mod hermes_api;
 mod hermes_hooks;
+#[path = "hermes_ws.rs"]
 mod hermes_ws;
 mod hooks;
 mod integrations;
