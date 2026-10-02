@@ -43,7 +43,11 @@ function renderDiff(text: string): HTMLElement {
 
 // ── Hermes Gateway section ───────────────────────────────────────────────────
 
-function hermesSection(hasAuthPass: boolean, hasApiKey: boolean): HTMLElement {
+function hermesSection(
+  hasAuthPass: boolean,
+  hasApiKey: boolean,
+  hasWebhookSecret: boolean,
+): HTMLElement {
   const body = h("div", { style: "display:flex;flex-direction:column;gap:12px" });
 
   const dotEl = statusDot(false);
@@ -80,6 +84,20 @@ function hermesSection(hasAuthPass: boolean, hasApiKey: boolean): HTMLElement {
     style: "flex:1;min-width:220px;padding:6px 10px;background:#1e1e24;border:1px solid #3e3e48;color:#fff;border-radius:6px",
   }) as HTMLInputElement;
 
+  const webhookPortInput = h("input", {
+    type: "number",
+    value: String(settings.webhookPort || 19641),
+    min: "1",
+    max: "65535",
+    style: "width:100px;padding:6px 10px;background:#1e1e24;border:1px solid #3e3e48;color:#fff;border-radius:6px",
+  }) as HTMLInputElement;
+
+  const webhookSecretInput = h("input", {
+    type: "password",
+    placeholder: hasWebhookSecret ? "•••••••• (saved)" : "Optional HMAC secret",
+    style: "flex:1;min-width:180px;padding:6px 10px;background:#1e1e24;border:1px solid #3e3e48;color:#fff;border-radius:6px",
+  }) as HTMLInputElement;
+
   const feedback = h("div", { class: "hint", style: "font-size:12px;margin-top:2px" });
 
   const connectBtn = h("button", {
@@ -94,6 +112,8 @@ function hermesSection(hasAuthPass: boolean, hasApiKey: boolean): HTMLElement {
       settings.gatewayUrl = gwInput.value.trim();
       settings.apiServerUrl = apiInput.value.trim();
       settings.authUsername = userInput.value.trim();
+      const port = Number.parseInt(webhookPortInput.value, 10);
+      settings.webhookPort = Number.isFinite(port) && port > 0 ? port : 19641;
       await save();
       try {
         if (passInput.value.trim()) {
@@ -105,6 +125,11 @@ function hermesSection(hasAuthPass: boolean, hasApiKey: boolean): HTMLElement {
           await Bridge.secretSet("hermes-api-key", apiKeyInput.value.trim());
           apiKeyInput.value = "";
           apiKeyInput.placeholder = "•••••••• (saved)";
+        }
+        if (webhookSecretInput.value.trim()) {
+          await Bridge.secretSet("hermes-webhook-secret", webhookSecretInput.value.trim());
+          webhookSecretInput.value = "";
+          webhookSecretInput.placeholder = "•••••••• (saved)";
         }
       } catch (e) {
         feedback.textContent = `Credential store error: ${String(e)}`;
@@ -131,7 +156,7 @@ function hermesSection(hasAuthPass: boolean, hasApiKey: boolean): HTMLElement {
   body.append(
     h("div", {
       class: "hint",
-      text: "Gateway (:9119) drives live status & approvals. Island chat uses the API server (:8642).",
+      text: "Gateway (:9119) drives live status & approvals. Island chat uses the API server (:8642). Outbound hooks POST tool/session events to the webhook port below (same island display as Claude Code).",
     }),
     h("div", { class: "row" },
       h("label", { text: "Gateway URL" }),
@@ -150,6 +175,19 @@ function hermesSection(hasAuthPass: boolean, hasApiKey: boolean): HTMLElement {
       h("label", { text: "API key" }),
       apiKeyInput,
     ),
+    h("div", { class: "row" },
+      h("label", { text: "Hook webhook" }),
+      toggle(settings.webhookEnabled, (v) => { settings.webhookEnabled = v; void save(); }),
+      webhookPortInput,
+    ),
+    h("div", { class: "row" },
+      h("label", { text: "Webhook secret" }),
+      webhookSecretInput,
+    ),
+    h("div", {
+      class: "hint",
+      text: `Point Hermes hooks.outbound at http://<this-pc-tailscale-ip>:${settings.webhookPort || 19641}/hooks`,
+    }),
     h("div", { class: "row" },
       h("label", { text: "Auto-connect" }),
       toggle(settings.autoConnect, (v) => { settings.autoConnect = v; void save(); }),
@@ -569,6 +607,7 @@ async function main() {
   const hasKey = (await Bridge.secretPresent("anthropic-api-key")) ?? false;
   const hasAuthPass = (await Bridge.secretPresent("hermes-auth-pass")) ?? false;
   const hasHermesApiKey = (await Bridge.secretPresent("hermes-api-key")) ?? false;
+  const hasWebhookSecret = (await Bridge.secretPresent("hermes-webhook-secret")) ?? false;
 
   const keys = [
     "stripe-api-key", "github-token", "vercel-token",
@@ -580,7 +619,7 @@ async function main() {
   clear(root);
   root.append(
     h("h1", {}, h("span", { text: "Coucou Hermes" }), h("span", { class: "version", text: version })),
-    hermesSection(hasAuthPass, hasHermesApiKey),
+    hermesSection(hasAuthPass, hasHermesApiKey, hasWebhookSecret),
     claudeSection(status),
     apiSection(hasKey),
     integrationsSection(present),

@@ -115,6 +115,9 @@ export interface Settings {
   apiServerUrl: string;
   authUsername: string;
   autoConnect: boolean;
+  /** Accept Hermes outbound webhook POSTs (live island updates). */
+  webhookEnabled: boolean;
+  webhookPort: number;
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -134,6 +137,8 @@ export const DEFAULT_SETTINGS: Settings = {
   apiServerUrl: "http://h9-xpvm.taila48f73.ts.net:8642",
   authUsername: "admin",
   autoConnect: true,
+  webhookEnabled: true,
+  webhookPort: 19641,
 };
 
 type Listener = () => void;

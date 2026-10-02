@@ -28,6 +28,12 @@ pub struct Settings {
     pub auth_username: String,
     #[serde(default = "default_auto_connect")]
     pub auto_connect: bool,
+
+    /// Listen for Hermes `hooks.outbound` POSTs (Claude-style island updates).
+    #[serde(default = "default_webhook_enabled")]
+    pub webhook_enabled: bool,
+    #[serde(default = "default_webhook_port")]
+    pub webhook_port: u16,
 }
 
 fn default_model() -> String {
@@ -50,6 +56,14 @@ fn default_auto_connect() -> bool {
     true
 }
 
+fn default_webhook_enabled() -> bool {
+    true
+}
+
+fn default_webhook_port() -> u16 {
+    19641
+}
+
 impl Default for Settings {
     fn default() -> Self {
         Self {
@@ -70,6 +84,8 @@ impl Default for Settings {
             api_server_url: default_api_server_url(),
             auth_username: default_auth_username(),
             auto_connect: default_auto_connect(),
+            webhook_enabled: default_webhook_enabled(),
+            webhook_port: default_webhook_port(),
         }
     }
 }

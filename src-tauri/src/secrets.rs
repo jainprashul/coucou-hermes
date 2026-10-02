@@ -9,6 +9,7 @@ const SERVICE: &str = "com.nousresearch.coucou.hermes";
 pub const KNOWN_KEYS: &[&str] = &[
     "hermes-auth-pass",
     "hermes-api-key",
+    "hermes-webhook-secret",
     "anthropic-api-key",
     "n8n-url",
     "n8n-api-key",

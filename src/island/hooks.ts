@@ -9,6 +9,7 @@ import { State } from "../core/state";
 import type { Island } from "./island";
 
 const CLAUDE_ID = "integration_claude";
+const HERMES_ID = "integration_hermes";
 
 /** Clears the approval card if no decision was made before the hook gave up. */
 let pendingTimeout: number | null = null;
@@ -27,9 +28,9 @@ interface HookPayload {
   coucou_agent?: string;
 }
 
-/** Same rule as HookServer.validateAgent on macOS. "claude" is reserved. */
+/** Same rule as HookServer.validateAgent on macOS. "claude"/"hermes" are reserved. */
 function validateAgent(raw: string | undefined): string | null {
-  if (!raw || raw.length > 24 || raw === "claude") return null;
+  if (!raw || raw.length > 24 || raw === "claude" || raw === "hermes") return null;
   if (!/^[a-z0-9-]+$/.test(raw)) return null;
   return raw;
 }
@@ -76,6 +77,21 @@ const TOOL_LABELS: Record<string, string> = {
   MultiEdit: "Modifie",
   NotebookEdit: "Notebook",
   PowerShell: "Exécute",
+  // Hermes tool names (outbound webhooks / remote agent)
+  terminal: "Exécute",
+  execute_code: "Code Python",
+  patch: "Modifie",
+  write_file: "Écrit",
+  read_file: "Lit",
+  search_files: "Cherche",
+  web_search: "Recherche web",
+  web_extract: "Extrait page",
+  delegate_task: "Délègue tâche",
+  browser_exec: "Navigateur",
+  memory: "Mémoire",
+  skill_manage: "Compétence",
+  skill_view: "Consulte doc",
+  clarify: "Question",
 };
 
 function stepLabel(tool: string, input: Record<string, unknown>): string {
@@ -120,19 +136,23 @@ function approvalTarget(tool: string, input: Record<string, unknown>): string {
   return tool;
 }
 
-function upsert(projectName: string, cwd: string) {
-  const t = State.tasks.find((x) => x.id === CLAUDE_ID);
+function upsert(projectName: string, cwd: string, agentId: string = CLAUDE_ID) {
+  const t = State.tasks.find((x) => x.id === agentId);
   if (!t) return;
-  t.name = projectName;
+  if (agentId === HERMES_ID) {
+    t.name = projectName && projectName !== "Session" ? projectName : "Hermes Agent";
+  } else {
+    t.name = projectName;
+  }
   if (cwd) t.sessionCwd = cwd;
 }
 
-function clearSession() {
-  const t = State.tasks.find((x) => x.id === CLAUDE_ID);
+function clearSession(agentId: string = CLAUDE_ID) {
+  const t = State.tasks.find((x) => x.id === agentId);
   if (!t) return;
   t.steps = [];
   t.stepIndex = 0;
-  t.name = "VS Code";
+  t.name = agentId === HERMES_ID ? "Hermes Agent" : "VS Code";
   t.pillBadge = null;
 }
 
@@ -154,10 +174,13 @@ function handleHook(island: Island, payload: HookPayload) {
   const raw = lastPathComponent(cwd);
   const projectName = aliasProjectName(raw || "Session");
 
-  // Route to the right pill. Valid coucou_agent → dynamic "agent_<name>" pill.
-  // "claude" is reserved; absent or invalid → Claude Code pill unchanged.
-  const validAgent = validateAgent(payload.coucou_agent);
-  const agentId = validAgent ? `agent_${validAgent}` : CLAUDE_ID;
+  // Route to the right pill.
+  // coucou_agent=hermes → Hermes Agent pill (outbound webhooks / --agent hermes).
+  // Valid other agent → dynamic "agent_<name>" pill.
+  // Absent or invalid → Claude Code pill.
+  const isHermes = payload.coucou_agent === "hermes";
+  const validAgent = isHermes ? null : validateAgent(payload.coucou_agent);
+  const agentId = isHermes ? HERMES_ID : validAgent ? `agent_${validAgent}` : CLAUDE_ID;
   const isExternalAgent = validAgent !== null;
 
   const focused = State.focusId === agentId;
@@ -173,12 +196,12 @@ function handleHook(island: Island, payload: HookPayload) {
     }
   };
 
-  /** Ensure the agent pill exists (no-op for Claude Code). */
+  /** Ensure the agent pill exists (no-op for Claude / Hermes built-ins). */
   const ensurePill = () => {
     if (isExternalAgent) {
       State.upsertExternalAgent(agentId, validAgent!, agentColor(validAgent!));
     } else {
-      upsert(projectName, cwd);
+      upsert(projectName, cwd, agentId);
     }
   };
 
@@ -258,7 +281,7 @@ function handleHook(island: Island, payload: HookPayload) {
         State.removeTask(agentId);
       } else {
         State.updateTask(agentId, "idle");
-        clearSession();
+        clearSession(agentId);
       }
       break;
 
@@ -271,10 +294,10 @@ function handleHook(island: Island, payload: HookPayload) {
       break;
 
     case "PermissionRequest": {
-      // External agents do not get an approval card — showing one would look like
-      // a Claude Code request. Decline immediately so the agent re-asks in its
-      // terminal. Approval support for other agents will come with Codex support.
-      if (isExternalAgent) {
+      // External agents and Hermes: no pipe approval card.
+      // Hermes approvals use gateway `server_request` → hermes-approval (interactive).
+      // Declining here lets the terminal / gateway path take over.
+      if (isExternalAgent || isHermes) {
         if (payload.request_id) void Bridge.approvalDecline(payload.request_id);
         break;
       }
@@ -287,7 +310,7 @@ function handleHook(island: Island, payload: HookPayload) {
         if (requestId) void Bridge.approvalDecline(requestId);
         break;
       }
-      upsert(projectName, cwd);
+      upsert(projectName, cwd, CLAUDE_ID);
       if (pendingTimeout != null) window.clearTimeout(pendingTimeout);
       const tool = payload.tool_name ?? "Tool";
       const input = payload.tool_input ?? {};

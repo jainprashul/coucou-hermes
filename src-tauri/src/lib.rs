@@ -3,6 +3,7 @@
 mod claude;
 mod files;
 mod hermes_api;
+mod hermes_hooks;
 mod hermes_ws;
 mod hooks;
 mod integrations;
@@ -75,6 +76,11 @@ fn save_settings(app: AppHandle, shared: State<Shared>, settings: Settings) {
     if let Err(err) = settings::save(&settings) {
         eprintln!("[coucou] could not save settings: {err}");
     }
+    hermes_hooks::start(
+        app.clone(),
+        settings.webhook_port,
+        settings.webhook_enabled,
+    );
     if autostart_changed {
         let manager = app.autolaunch();
         let result = if settings.autostart { manager.enable() } else { manager.disable() };
@@ -506,6 +512,11 @@ pub fn run() {
             log::line(format!("--- Coucou Hermes {} started ---", env!("CARGO_PKG_VERSION")));
             hooks::ensure_hook_exe(&handle);
             pipe::start(handle.clone());
+            hermes_hooks::start(
+                handle.clone(),
+                loaded_for_setup.webhook_port,
+                loaded_for_setup.webhook_enabled,
+            );
             integrations::start(handle.clone());
 
             if loaded_for_setup.auto_connect && !loaded_for_setup.gateway_url.is_empty() {
