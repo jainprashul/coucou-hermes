@@ -28,6 +28,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::windows::named_pipe::{NamedPipeServer, ServerOptions};
 use tokio::sync::mpsc;
 
+use crate::events;
 use crate::island::WINDOW_LABEL;
 use crate::log;
 
@@ -127,7 +128,7 @@ async fn handle(app: AppHandle, mut pipe: NamedPipeServer) {
 
     if event != "PermissionRequest" {
         log::line(format!("hook {event}"));
-        let _ = app.emit_to(WINDOW_LABEL, "hook", payload);
+        let _ = app.emit_to(WINDOW_LABEL, events::HOOK, payload);
         let _ = pipe.disconnect();
         return;
     }
@@ -140,7 +141,7 @@ async fn handle(app: AppHandle, mut pipe: NamedPipeServer) {
     }
     payload["request_id"] = json!(id);
     log::line(format!("hook PermissionRequest id={id}"));
-    let _ = app.emit_to(WINDOW_LABEL, "hook", payload);
+    let _ = app.emit_to(WINDOW_LABEL, events::HOOK, payload);
 
     let decision = wait_for_decision(&id, &mut rx).await;
     app.state::<Pending>().0.lock().unwrap().remove(&id);

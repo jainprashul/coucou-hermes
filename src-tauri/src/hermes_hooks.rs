@@ -20,6 +20,7 @@ use tauri::{AppHandle, Emitter};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 
+use crate::events;
 use crate::island::WINDOW_LABEL;
 use crate::log;
 use crate::secrets;
@@ -287,7 +288,7 @@ async fn handle_connection(
     );
 
     log::line(format!("hermes-hooks {raw_event} → {mapped}"));
-    let _ = app.emit_to(WINDOW_LABEL, "hook", payload);
+    let _ = app.emit_to(WINDOW_LABEL, events::HOOK, payload);
     write_response(stream, 200, "ok").await?;
     Ok(())
 }

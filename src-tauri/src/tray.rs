@@ -4,6 +4,7 @@ use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::TrayIconBuilder;
 use tauri::{AppHandle, Emitter};
 
+use crate::events;
 use crate::island::WINDOW_LABEL;
 
 pub fn build(app: &AppHandle) -> tauri::Result<()> {
@@ -23,7 +24,7 @@ pub fn build(app: &AppHandle) -> tauri::Result<()> {
             "quit" => app.exit(0),
             "settings" => crate::show_settings_window(app),
             id => {
-                let _ = app.emit_to(WINDOW_LABEL, "tray", id.to_string());
+                let _ = app.emit_to(WINDOW_LABEL, events::TRAY, id.to_string());
             }
         });
 

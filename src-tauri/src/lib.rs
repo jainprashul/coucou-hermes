@@ -1,6 +1,7 @@
 // Coucou for Windows — app wiring and the commands the island calls.
 
 mod claude;
+mod events;
 mod files;
 mod hermes_api;
 mod hermes_hooks;
@@ -13,6 +14,7 @@ mod pipe;
 mod secrets;
 mod settings;
 mod tray;
+mod util;
 mod win_user;
 
 use std::os::windows::process::CommandExt;
@@ -93,7 +95,7 @@ fn save_settings(app: AppHandle, shared: State<Shared>, settings: Settings) {
         island::apply_geometry(&app, &settings.screen, collapsed);
     }
     // Keep the other window in step (island ⇄ settings window).
-    let _ = app.emit("settings-changed", settings);
+    let _ = app.emit(events::SETTINGS_CHANGED, settings);
 }
 
 /// Hidden island → shrink the window to the invisible wake strip and park the
@@ -224,7 +226,7 @@ fn hooks_apply(
         let _ = settings::save(&current);
         current.clone()
     };
-    let _ = app.emit("settings-changed", updated);
+    let _ = app.emit(events::SETTINGS_CHANGED, updated);
     Ok(backup)
 }
 
@@ -449,7 +451,7 @@ pub fn run() {
 
     tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
-            let _ = app.emit_to(island::WINDOW_LABEL, "tray", "open".to_string());
+            let _ = app.emit_to(island::WINDOW_LABEL, events::TRAY, "open".to_string());
         }))
         .plugin(tauri_plugin_autostart::init(MacosLauncher::LaunchAgent, None))
         .manage(Shared {

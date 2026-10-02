@@ -19,6 +19,8 @@ use tauri::{AppHandle, Emitter, Manager};
 use crate::island::WINDOW_LABEL;
 use crate::log;
 use crate::secrets;
+use crate::events;
+use crate::util::base64;
 
 const TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -42,7 +44,7 @@ pub struct IntegrationEvent {
 }
 
 fn emit(app: &AppHandle, update: IntegrationUpdate) {
-    let _ = app.emit_to(WINDOW_LABEL, "integration", update);
+    let _ = app.emit_to(WINDOW_LABEL, events::INTEGRATION, update);
 }
 
 fn client() -> reqwest::Client {
@@ -145,7 +147,7 @@ fn status_error(code: u16, unauthorised_hint: &str) -> String {
 
 async fn poll_stripe(app: AppHandle) {
     let Some(key) = secrets::get("stripe-api-key") else { return };
-    let auth = format!("Basic {}", crate::claude::base64_for(format!("{key}:").as_bytes()));
+    let auth = format!("Basic {}", base64::encode(format!("{key}:").as_bytes()));
     let http = client();
 
     let balance = http

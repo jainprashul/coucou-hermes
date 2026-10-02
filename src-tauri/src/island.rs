@@ -297,7 +297,7 @@ pub fn spawn_cursor_poll(app: AppHandle, gate: Arc<PollGate>) {
                         last_screen = now;
                         if !first {
                             crate::log::line("display layout changed — repositioning".to_string());
-                            let _ = app.emit_to(WINDOW_LABEL, "screen-changed", ());
+                            let _ = app.emit_to(WINDOW_LABEL, crate::events::SCREEN_CHANGED, ());
                         }
                     }
                 }
@@ -355,7 +355,7 @@ pub fn spawn_cursor_poll(app: AppHandle, gate: Arc<PollGate>) {
                     let _ = win.set_ignore_cursor_events(!accept);
                 }
 
-                let _ = win.emit("cursor", CursorPayload { x, y });
+                let _ = win.emit(crate::events::CURSOR, CursorPayload { x, y });
             }
         }
     });

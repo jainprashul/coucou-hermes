@@ -22,8 +22,10 @@ use tokio_tungstenite::connect_async;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::Message;
 
+use crate::events;
 use crate::island::WINDOW_LABEL;
 use crate::log;
+use crate::util::base64;
 
 const RECONNECT_BASE_MS: u64 = 1000;
 const RECONNECT_MAX_MS: u64 = 10000;
@@ -230,7 +232,7 @@ pub fn start_gateway_connection(
             }
 
             state.is_connected.store(false, Ordering::Relaxed);
-            let _ = app.emit("hermes-status", state.status());
+            let _ = app.emit(events::HERMES_STATUS, state.status());
 
             tokio::time::sleep(Duration::from_millis(backoff)).await;
             backoff = (backoff * 2).min(RECONNECT_MAX_MS);
@@ -332,7 +334,7 @@ async fn connect_and_run(
             use std::io::Write;
             let mut auth_bytes = Vec::new();
             let _ = write!(auth_bytes, "{u}:{p}");
-            let encoded = base64_simple(&auth_bytes);
+            let encoded = base64::encode(&auth_bytes);
             if let Ok(val) = format!("Basic {encoded}").parse() {
                 req.headers_mut().insert("Authorization", val);
             }
@@ -351,7 +353,7 @@ async fn connect_and_run(
     *state.last_error.lock().unwrap() = None;
     state.is_connected.store(true, Ordering::Relaxed);
     log::line(format!("hermes connected gen={gen}"));
-    let _ = app.emit("hermes-status", state.status());
+    let _ = app.emit(events::HERMES_STATUS, state.status());
 
     let (tx_outgoing, mut rx_outgoing) = mpsc::unbounded_channel::<String>();
     *state.tx_outgoing.lock().unwrap() = Some(tx_outgoing.clone());
@@ -631,7 +633,7 @@ async fn handle_incoming_text(
             .map(|t| t == "gateway.ready")
             .unwrap_or(false);
     }
-    let _ = app.emit_to(WINDOW_LABEL, "hermes-event", val);
+    let _ = app.emit_to(WINDOW_LABEL, events::HERMES_EVENT, val);
     saw_ready
 }
 
@@ -789,7 +791,7 @@ async fn handle_approval_request(
         choices,
     };
 
-    let _ = app.emit_to(WINDOW_LABEL, "hermes-approval", payload);
+    let _ = app.emit_to(WINDOW_LABEL, events::HERMES_APPROVAL, payload);
 
     let tx_out = tx_outgoing.clone();
     let pending_map = state.pending_approvals.clone();
@@ -905,7 +907,7 @@ async fn handle_clarify_request(
         questions,
     };
 
-    let _ = app.emit_to(WINDOW_LABEL, "hermes-clarify", payload);
+    let _ = app.emit_to(WINDOW_LABEL, events::HERMES_CLARIFY, payload);
 
     let tx_out = tx_outgoing.clone();
     let pending_map = state.pending_clarifies.clone();
@@ -930,45 +932,6 @@ async fn handle_clarify_request(
 
         let _ = tx_out.send(response);
     });
-}
-
-fn base64_simple(input: &[u8]) -> String {
-    const CHARSET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut out = String::new();
-    let mut i = 0;
-    while i < input.len() {
-        let b0 = input[i] as u32;
-        let b1 = if i + 1 < input.len() {
-            input[i + 1] as u32
-        } else {
-            0
-        };
-        let b2 = if i + 2 < input.len() {
-            input[i + 2] as u32
-        } else {
-            0
-        };
-
-        let triple = (b0 << 16) | (b1 << 8) | b2;
-
-        out.push(CHARSET[((triple >> 18) & 0x3F) as usize] as char);
-        out.push(CHARSET[((triple >> 12) & 0x3F) as usize] as char);
-
-        if i + 1 < input.len() {
-            out.push(CHARSET[((triple >> 6) & 0x3F) as usize] as char);
-        } else {
-            out.push('=');
-        }
-
-        if i + 2 < input.len() {
-            out.push(CHARSET[(triple & 0x3F) as usize] as char);
-        } else {
-            out.push('=');
-        }
-
-        i += 3;
-    }
-    out
 }
 
 #[cfg(test)]
