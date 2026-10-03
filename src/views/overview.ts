@@ -103,7 +103,7 @@ export function buildOverview(actions: ViewActions): ViewHost {
         const key = [
           task.id, detailOpen, task.state, task.steps.join("|"),
           info?.loaded, info?.error, info?.configured,
-          JSON.stringify(info?.data ?? {}),
+          stringifyData(info?.data),
         ].join("~");
         if (key !== cardKey) {
           cardKey = key;
@@ -177,3 +177,20 @@ export function lighten(hex: string, amount: number): string {
   );
   return `rgb(${c[0]},${c[1]},${c[2]})`;
 }
+
+const dataJsonCache = new WeakMap<object, string>();
+
+/**
+ * Returns stringified JSON for integration data, cached by object reference
+ * to avoid expensive serialization churn on repeated sync ticks.
+ */
+export function stringifyData(data: unknown): string {
+  if (!data || typeof data !== "object") return "{}";
+  let cached = dataJsonCache.get(data);
+  if (cached === undefined) {
+    cached = JSON.stringify(data);
+    dataJsonCache.set(data, cached);
+  }
+  return cached;
+}
+

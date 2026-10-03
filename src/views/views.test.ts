@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import * as viewsFromViews from "./views";
 import * as viewsFromIndex from "./index";
-import { lighten } from "./overview";
+import { lighten, stringifyData } from "./overview";
 
 describe("views module structure", () => {
   it("exports all required view builders from index.ts", () => {
@@ -57,3 +57,34 @@ describe("lighten", () => {
     expect(lighten("#102030", 0.2)).toBe("rgb(67,83,99)");
   });
 });
+
+describe("stringifyData", () => {
+  it("returns {} for undefined, null, or non-object types", () => {
+    expect(stringifyData(undefined)).toBe("{}");
+    expect(stringifyData(null)).toBe("{}");
+    expect(stringifyData("string")).toBe("{}");
+    expect(stringifyData(123)).toBe("{}");
+    expect(stringifyData(true)).toBe("{}");
+  });
+
+  it("stringifies empty and populated objects accurately", () => {
+    expect(stringifyData({})).toBe("{}");
+    expect(stringifyData({ totalRepos: 42 })).toBe('{"totalRepos":42}');
+  });
+
+  it("caches the result by object reference", () => {
+    const data = { deployments: [{ id: "1", state: "READY" }] };
+    const first = stringifyData(data);
+    const second = stringifyData(data);
+    expect(first).toBe(second);
+    expect(first).toBe('{"deployments":[{"id":"1","state":"READY"}]}');
+  });
+
+  it("updates stringification when given a new object instance", () => {
+    const data1 = { count: 1 };
+    const data2 = { count: 2 };
+    expect(stringifyData(data1)).toBe('{"count":1}');
+    expect(stringifyData(data2)).toBe('{"count":2}');
+  });
+});
+
