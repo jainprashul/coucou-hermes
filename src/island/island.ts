@@ -4,7 +4,7 @@
 import { Spring } from "../core/anim";
 import { Bridge, IS_TAURI, onDragDrop } from "../core/bridge";
 import {
-  EXPANDED_W, PANEL_H, PANEL_W,
+  PANEL_H, PANEL_W,
   VIEW_LAYOUTS, botPosition, chatPromptHeight,
   type IslandMode, type IslandViewName,
 } from "../core/layout";
@@ -15,8 +15,14 @@ import { Greeting } from "../mochi/greeting";
 import { tickMiniBots } from "../mochi/minibots";
 import { UploadCanvas } from "../upload/canvas";
 import { USC, UploadSeq } from "../upload/sequence";
-import { buildHeader, buildViews, type ViewActions, type ViewHost } from "../views/views";
+import { buildHeader, buildViews, type ViewHost } from "../views/views";
 import { h } from "../views/dom";
+import {
+  createFilePromptContext,
+  createUploadCanvasActions,
+  createViewActions,
+  setupGreetingCanvas,
+} from "./actions";
 import {
   BOT_OVERHANG,
   BotHoverController,
@@ -128,82 +134,16 @@ export class Island {
   // ── DOM ─────────────────────────────────────────────────────────────────────
 
   private build() {
-    const actions: ViewActions = {
+    const actions = createViewActions({
       setView: (v) => this.setView(v),
       collapse: () => this.collapse(),
-      setFocus: (id) => {
-        State.setFocus(id);
-        Sound.play("blip");
+      setPinned: (pinned) => {
+        this.fsm.pinned = pinned;
       },
-      openTerminal: () => {
-        const cwd = State.focusTask?.sessionCwd ?? null;
-        void Bridge.openInVSCode(cwd);
-      },
-      // The ↗ button — same targets as openAgentTarget() on macOS.
-      openTarget: () => {
-        const task = State.focusTask;
-        if (!task) return;
-        const urls: Record<string, string> = {
-          integration_resend: "https://resend.com/emails",
-          integration_vercel: "https://vercel.com/dashboard",
-          integration_github: "https://github.com",
-          integration_stripe: "https://dashboard.stripe.com/payments",
-          integration_notion: "https://notion.so",
-          integration_calcom: "https://app.cal.com/bookings",
-        };
-        if (task.id === "integration_claude") void Bridge.openInVSCode(task.sessionCwd ?? null);
-        else if (task.id === "integration_n8n") void Bridge.openN8n();
-        else if (urls[task.id]) void Bridge.openUrl(urls[task.id]);
-      },
-      openUrl: (url) => {
-        if (url) void Bridge.openUrl(url);
-      },
-      decide: (d) => {
-        const req = State.pendingApproval;
-        void Bridge.log(`decide ${d} req=${req?.requestId ?? "none"}`);
-        if (!req) return;
-        Sound.play(d === "deny" ? "blip" : "approve");
-
-        // Send exactly one decision. Claude hook approvals only understand allow|deny.
-        const claudePending = State.tasks.some(
-          (t) => t.id === "integration_claude" && t.state === "approval",
-        );
-        if (claudePending) {
-          void Bridge.approvalDecision(req.requestId, d === "deny" ? "deny" : "allow");
-        } else {
-          void Bridge.hermesDecide(req.requestId, d);
-        }
-
-        State.pendingApproval = null;
-        State.isPinned = false;
-        this.fsm.pinned = false;
-        State.updateTask("integration_hermes", "working");
-        State.setPillBadge("integration_hermes", null);
-        State.updateTask("integration_claude", "working");
-        State.setPillBadge("integration_claude", null);
-        this.setView(State.defaultView());
-      },
-      toggleSound: () => {
-        State.settings.soundEnabled = !State.settings.soundEnabled;
-        Sound.setEnabled(State.settings.soundEnabled);
-        void Bridge.saveSettings(State.settings);
-        State.notify();
-      },
-      setVolume: (v) => {
-        State.settings.soundVolume = v;
-        Sound.setVolume(v);
-        void Bridge.saveSettings(State.settings);
-        State.notify();
-      },
-      setAutoClose: (s) => {
-        State.settings.autoCloseInterval = s;
+      setAutoCloseDelay: (s) => {
         this.fsm.homeToPetitDelay = s;
-        void Bridge.saveSettings(State.settings);
-        State.notify();
       },
-      openSettingsWindow: () => void Bridge.openSettingsWindow(),
-      blip: () => Sound.play("blip"),
-    };
+    });
 
     this.wakeStrip = h("div", { id: "wake-strip" });
     this.botGlow = h("div", { id: "bot-glow" });
@@ -220,15 +160,7 @@ export class Island {
 
     // The drop sequence draws the card, the bar and its own Mochi. It sits under
     // the header, which stays visible on top of it exactly as on macOS.
-    this.uploadCanvas = new UploadCanvas({
-      ask: () => {
-        State.promptContext = State.droppedFile
-          ? { kind: "file", name: State.droppedFile.name, path: State.droppedFile.path }
-          : null;
-        this.setView("prompt");
-      },
-      cancel: () => this.setView(State.defaultView()),
-    });
+    this.uploadCanvas = new UploadCanvas(createUploadCanvasActions(this));
 
     this.clipEl = h(
       "div",
@@ -247,11 +179,7 @@ export class Island {
       this.countdown,
     );
 
-    const dpr = Math.min(2, window.devicePixelRatio || 1);
-    this.greetingCanvas.width = Math.round(EXPANDED_W * dpr);
-    this.greetingCanvas.height = Math.round(150 * dpr);
-    this.greetingCanvas.style.width = `${EXPANDED_W}px`;
-    this.greetingCanvas.style.height = "150px";
+    setupGreetingCanvas(this.greetingCanvas);
 
     this.root.append(this.wakeStrip, this.islandEl);
     this.applyGeometry();
@@ -428,7 +356,7 @@ export class Island {
   private swallow(path: string) {
     const name = path.split(/[\\/]/).pop() || "file";
     State.droppedFile = { name, path };
-    State.promptContext = { kind: "file", name, path };
+    State.promptContext = createFilePromptContext(State.droppedFile);
     State.chatHistory = [];
     void Bridge.chatReset();
 
@@ -448,7 +376,7 @@ export class Island {
     void Bridge.ingestFile(path)
       .then((file) => {
         State.droppedFile = { name: file.name, path: file.path };
-        State.promptContext = { kind: "file", name: file.name, path: file.path };
+        State.promptContext = createFilePromptContext(State.droppedFile);
         State.notify();
       })
       .catch((err) => {
