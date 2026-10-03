@@ -13,5 +13,3 @@ export const EVENT_NAMES = {
   integration: "integration",
   hook: "hook",
 } as const;
-
-export type EventName = (typeof EVENT_NAMES)[keyof typeof EVENT_NAMES];
