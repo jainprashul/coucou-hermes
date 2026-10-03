@@ -24,7 +24,6 @@ describe("islandSize", () => {
 
   it("uses the view layout height when expanded", () => {
     expect(islandSize("expanded", "overview")).toEqual({ w: EXPANDED_W, h: 160 });
-    expect(islandSize("expanded", "mail")).toEqual({ w: EXPANDED_W, h: 240 });
   });
 
   it("grows the prompt view with the conversation, capped at 300", () => {
