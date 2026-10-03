@@ -81,7 +81,9 @@ export class Island {
   private botCy = new Spring(16);
   private botSize = new Spring(10);
 
-  private engine = new BotEngine();
+  private engine = new BotEngine({
+    playSound: (s) => Sound.play(s),
+  });
   private greeting = new Greeting();
 
   private running = false;

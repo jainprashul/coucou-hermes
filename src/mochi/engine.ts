@@ -5,7 +5,6 @@
 // arc angles produce a different shape.
 
 import { Ease } from "../core/anim";
-import { Sound } from "../core/sound";
 import type { BotEmoteName, BotStateName } from "../core/layout";
 import {
   type EyeShape,
@@ -110,6 +109,13 @@ export {
   drawBot,
 };
 
+export type BotSoundEffect = "slap" | "annoyed" | "greet";
+export type BotSoundCallback = (sound: BotSoundEffect) => void;
+
+export interface BotEngineOptions {
+  playSound?: BotSoundCallback | null;
+}
+
 // ── Small helpers ─────────────────────────────────────────────────────────────
 
 const now = () => performance.now() / 1000;
@@ -178,6 +184,17 @@ export class BotEngine {
 
   /** Fired when three slaps land inside 1.7 s (→ dizzy + confused view). */
   onDizzy: (() => void) | null = null;
+
+  /** Sound trigger callback, e.g. (sound) => Sound.play(sound). */
+  playSound: BotSoundCallback | null = null;
+
+  constructor(options?: BotEngineOptions | BotSoundCallback) {
+    if (typeof options === "function") {
+      this.playSound = options;
+    } else if (options && typeof options === "object" && options.playSound !== undefined) {
+      this.playSound = options.playSound;
+    }
+  }
 
   // ── Public API ──────────────────────────────────────────────────────────────
 
@@ -261,7 +278,7 @@ export class BotEngine {
     const t = now();
     this.slapTimes = this.slapTimes.filter((s) => t - s < 1.7);
     this.slapTimes.push(t);
-    Sound.play("slap");
+    this.playSound?.("slap");
     this.squash();
     if (this.slapTimes.length >= 3) {
       this.slapTimes = [];
@@ -269,7 +286,7 @@ export class BotEngine {
     } else {
       this.eyeOverride = "line";
       this.eyeOverrideUntil = t + 0.8;
-      setTimeout(() => Sound.play("annoyed"), 60);
+      setTimeout(() => this.playSound?.("annoyed"), 60);
     }
   }
 
@@ -294,7 +311,7 @@ export class BotEngine {
       this.anim("hands", [[1, 280, Ease.out]]);
       this.anim("sy", [[0.95, 100, Ease.out], [1.0, 260, Ease.back]]);
       this.anim("sx", [[1.04, 100, Ease.out], [1.0, 260, Ease.back]]);
-      Sound.play("greet");
+      this.playSound?.("greet");
     }, 250);
 
     setTimeout(() => { if (this.greetToken === tok) this.blink(); }, 550);
@@ -378,7 +395,7 @@ export class BotEngine {
       case "annoyed":
         this.eyeOverride = "line";
         this.eyeOverrideUntil = t + 0.8;
-        setTimeout(() => Sound.play("annoyed"), 60);
+        setTimeout(() => this.playSound?.("annoyed"), 60);
         break;
     }
   }
