@@ -54,17 +54,6 @@ export type PromptContext =
   | { kind: "window"; appName: string; title: string; url?: string }
   | { kind: "file"; name: string; path?: string };
 
-export interface ResultItem {
-  label: string;
-  detail: string;
-  url?: string;
-}
-
-export interface SearchResult {
-  title: string;
-  items: ResultItem[];
-  note?: string;
-}
 
 export interface HermesConnectionStatus {
   connected: boolean;

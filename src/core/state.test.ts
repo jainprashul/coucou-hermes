@@ -25,7 +25,6 @@ describe("AppState task lookup and indexing", () => {
     expect(State.findTask(null)).toBeNull();
     expect(State.findTask(undefined)).toBeNull();
     expect(State.findTask("")).toBeNull();
-    expect(State.getTask(null)).toBeNull();
   });
 
   it("finds tasks by id in O(1) via internal index", () => {
@@ -35,7 +34,6 @@ describe("AppState task lookup and indexing", () => {
 
     expect(State.findTask("agent_1")).toBe(t1);
     expect(State.findTask("agent_2")).toBe(t2);
-    expect(State.getTask("agent_1")).toBe(t1);
     expect(State.findTask("nonexistent")).toBeNull();
   });
 
