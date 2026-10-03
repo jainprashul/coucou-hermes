@@ -14,11 +14,9 @@ import { BotEngine } from "../mochi/engine";
 import { Greeting } from "../mochi/greeting";
 import { tickMiniBots } from "../mochi/minibots";
 import { UploadCanvas } from "../upload/canvas";
-import { USC, UploadSeq } from "../upload/sequence";
 import { buildHeader, buildViews, type ViewHost } from "../views/views";
 import { h } from "../views/dom";
 import {
-  createFilePromptContext,
   createUploadCanvasActions,
   createViewActions,
   setupGreetingCanvas,
@@ -44,15 +42,17 @@ import {
   handleWakeStripEnter,
   isPointInBot,
 } from "./cursor";
+import {
+  DropFlowController,
+  dropPin,
+  pinForAlert,
+  revealIsland,
+  syncUploadDom,
+  triggerAlert,
+} from "./dropFlow";
 import { IslandStateMachine } from "./fsm";
 import { IslandGeometry, type IslandRect } from "./geometry";
 import { syncIslandDom, syncViewFocus, updateCountdown } from "./sync";
-
-/** The three views the drop sequence owns; leaving them stops the engine. */
-const UPLOAD_VIEWS: ReadonlySet<IslandViewName> = new Set(["upload", "uploading", "choose"]);
-
-/** Seconds between the drop and the moment the progress bar starts filling. */
-const PRE_PROGRESS = USC.T_PROG_START - USC.T_DROP;
 
 const modeOrder = (m: IslandMode) => (m === "hidden" ? 0 : m === "compact" ? 1 : 2);
 
@@ -74,6 +74,7 @@ export class Island {
   private header!: ViewHost;
   private views!: Map<IslandViewName, ViewHost>;
   private uploadCanvas!: UploadCanvas;
+  private dropFlow: DropFlowController;
 
   private geometry = new IslandGeometry();
   private botCx = new Spring(46);
@@ -105,10 +106,6 @@ export class Island {
     this.cursorTracker.wasInIsland = val;
   }
 
-  /** Drop sequence bookkeeping: last tick played, and whether the ✓ has fired. */
-  private uploadTens = 0;
-  private uploadDone = false;
-
   constructor(root: HTMLElement) {
     this.root = root;
     this.botHover = new BotHoverController({
@@ -119,6 +116,16 @@ export class Island {
       },
       playSound: (s) => Sound.play(s),
       isOverrideActive: () => State.stateOverride != null,
+    });
+    this.dropFlow = new DropFlowController({
+      setView: (v) => this.setView(v),
+      alert: (v) => this.alert(v),
+      ensureRunning: () => this.ensureRunning(),
+      engine: {
+        animateMorph: (amount) => this.engine.animateMorph(amount),
+        gulp: () => this.engine.gulp(),
+        triggerEmote: (emote) => this.engine.triggerEmote(emote),
+      },
     });
     this.build();
     this.wireFsm();
@@ -235,7 +242,7 @@ export class Island {
       // Nothing can be seen of the sequence once the island is shut, and leaving
       // it running would keep the frame loop awake — the island must cost
       // nothing while hidden.
-      UploadSeq.deactivate();
+      this.dropFlow.deactivate();
     }
     this.updateWindowCollapsed();
     this.animateGeometry(modeOrder(mode) < modeOrder(prev));
@@ -244,12 +251,12 @@ export class Island {
 
   /** True while the drop sequence owns the island body. */
   private get uploadActive(): boolean {
-    return State.mode === "expanded" && UploadSeq.isActive && UPLOAD_VIEWS.has(State.view);
+    return this.dropFlow.isUploadActive;
   }
 
   /** Navigating out of the drop flow ends the sequence, as on macOS. */
   private stopSequenceIfLeaving(view: IslandViewName) {
-    if (UploadSeq.isActive && !UPLOAD_VIEWS.has(view)) UploadSeq.deactivate();
+    this.dropFlow.stopSequenceIfLeaving(view);
   }
 
   expand(view: IslandViewName) {
@@ -289,131 +296,21 @@ export class Island {
 
   /** Alert from the hook server: open on this view. Pinned alerts never auto-close. */
   alert(view: IslandViewName) {
-    this.fsm.pinned = State.isPinned;
-    this.fsm.forceHome();
-    this.expand(view);
+    triggerAlert(view, { fsm: this.fsm, expand: (v) => this.expand(v) });
   }
 
   /** Sync FSM pin when an alert surfaces while already expanded (setView path). */
   pinForAlert() {
-    this.fsm.pinned = true;
+    pinForAlert(this.fsm);
   }
 
   reveal() {
-    this.fsm.reveal();
+    revealIsland(this.fsm);
   }
 
   /** An alert stopped waiting for an answer: let the island auto-close again. */
   dropPin() {
-    this.fsm.pinned = false;
-  }
-
-  // ── File drop ───────────────────────────────────────────────────────────────
-
-  private onDragDrop(e: { type: string; paths?: string[] }) {
-    if (e.type !== "over") void Bridge.log(`drag ${e.type} ${e.paths?.length ?? 0} file(s)`);
-    if (State.paused) return;
-    switch (e.type) {
-      case "enter":
-      case "over": {
-        if (State.fileDragOver) return;
-        State.fileDragOver = true;
-        this.engine.animateMorph(1);
-        // enterZone must run before the island expands, so the sequence is
-        // already active by the time the view becomes `upload`.
-        UploadSeq.enterZone(State.mouseInIsland.x, State.mouseInIsland.y);
-        this.alert("upload");
-        break;
-      }
-      case "leave": {
-        if (!State.fileDragOver) return;
-        State.fileDragOver = false;
-        this.engine.animateMorph(0);
-        // The island deliberately stays open: the drag session is still alive.
-        UploadSeq.exitZone();
-        State.notify();
-        break;
-      }
-      case "drop": {
-        State.fileDragOver = false;
-        const path = e.paths?.[0];
-        if (!path) {
-          this.engine.animateMorph(0);
-          this.setView(State.defaultView());
-          return;
-        }
-        this.swallow(path);
-        break;
-      }
-    }
-  }
-
-  /**
-   * Mochi eats the file. Nothing here waits on the file system: the copy into
-   * the inbox runs in the background and swaps the path in when it lands, so a
-   * slow disk can never stall the animation — same as FileDropHandler on macOS.
-   */
-  private swallow(path: string) {
-    const name = path.split(/[\\/]/).pop() || "file";
-    State.droppedFile = { name, path };
-    State.promptContext = createFilePromptContext(State.droppedFile);
-    State.chatHistory = [];
-    void Bridge.chatReset();
-
-    UploadSeq.performDrop(State.uploadDuration);
-    this.uploadTens = 0;
-    this.uploadDone = false;
-
-    this.engine.gulp();
-    Sound.play("approve");
-    this.engine.triggerEmote("happy");
-    this.engine.animateMorph(0);
-
-    State.uploadProgress = 0;
-    this.setView("uploading");
-    this.ensureRunning();
-
-    void Bridge.ingestFile(path)
-      .then((file) => {
-        State.droppedFile = { name: file.name, path: file.path };
-        State.promptContext = createFilePromptContext(State.droppedFile);
-        State.notify();
-      })
-      .catch((err) => {
-        UploadSeq.deactivate();
-        State.noteMessage = String(err).replace(/^Error:\s*/, "");
-        this.engine.animateMorph(0);
-        this.setView("note");
-        Sound.play("error");
-        window.setTimeout(() => this.setView(State.defaultView()), 2400);
-      });
-  }
-
-  /**
-   * Sounds and view changes hung off the canvas timeline: a `tick` every 10 %,
-   * the ✓ chime when the bar completes, then `choose` once Mochi has grown back.
-   */
-  private stepSequence() {
-    const since = UploadSeq.sinceDrop();
-    if (since == null) return;
-    const dur = State.uploadDuration;
-    const p = Math.max(0, Math.min(1, (since - PRE_PROGRESS) / dur));
-
-    const tens = Math.floor(p * 10);
-    if (tens > this.uploadTens && tens < 10) {
-      this.uploadTens = tens;
-      Sound.play("tick");
-    }
-
-    if (!this.uploadDone && since >= PRE_PROGRESS + dur) {
-      this.uploadDone = true;
-      Sound.play("approve");
-      this.engine.triggerEmote("happy");
-    }
-    // The extra second is the grow-back, after which the choose card is up.
-    if (since >= PRE_PROGRESS + dur + 1 && State.view === "uploading") {
-      this.setView("choose");
-    }
+    dropPin(this.fsm);
   }
 
   // ── Geometry ────────────────────────────────────────────────────────────────
@@ -469,7 +366,7 @@ export class Island {
       State.lastActivity = performance.now();
     });
 
-    void onDragDrop((e) => this.onDragDrop(e));
+    void onDragDrop((e) => this.dropFlow.handleDragDrop(e));
 
     // Outside Tauri (plain browser) drive the cursor from DOM events so the
     // island can be inspected with `npm run dev`.
@@ -487,9 +384,7 @@ export class Island {
 
     // Windows sends no cursor position with an OLE drag, so the drop sequence is
     // fed from the Win32 cursor poll instead — it runs throughout the drag.
-    if (UploadSeq.isActive && !UploadSeq.dropped) {
-      UploadSeq.updateCursor(mouseInIsland.x, mouseInIsland.y);
-    }
+    this.dropFlow.updateCursor(mouseInIsland.x, mouseInIsland.y);
 
     if (entered) {
       if (this.fsm.state === "coucou") this.greeting.hover();
@@ -579,13 +474,12 @@ export class Island {
     }
 
     const uploadActive = this.uploadActive;
-    if (uploadActive) this.uploadCanvas.draw(UploadSeq.frame(), nowMs / 1000);
-    this.uploadCanvas.el.classList.toggle("on", uploadActive);
-    this.viewsEl.classList.toggle("hidden-by-upload", uploadActive);
+    if (uploadActive) this.dropFlow.drawCanvas(this.uploadCanvas, nowMs);
+    syncUploadDom(this.uploadCanvas.el, this.viewsEl, uploadActive);
 
     tickMiniBots(dt);
     this.views.get(State.view)?.tick?.(nowMs);
-    if (UploadSeq.isActive) this.stepSequence();
+    if (this.dropFlow.isSequenceActive) this.dropFlow.stepSequence();
     this.updateCountdown(nowMs);
 
     // Nothing is drawn while the island is hidden, so nothing may keep the loop
@@ -599,7 +493,7 @@ export class Island {
       ? settling
       : settling ||
         !this.botCx.settled || !this.botCy.settled || !this.botSize.settled ||
-        greetingActive || this.engine.busy || UploadSeq.isActive;
+        greetingActive || this.engine.busy || this.dropFlow.isSequenceActive;
 
     if (busy) {
       requestAnimationFrame(this.frame);
