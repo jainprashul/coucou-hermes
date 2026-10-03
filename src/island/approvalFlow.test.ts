@@ -138,10 +138,10 @@ describe("approvalFlow", () => {
           tool: "",
           command: "ls",
         }),
-      ).toBe("Confirmation requise");
+      ).toBe("Confirmation required");
 
-      expect(formatApprovalDescription(null)).toBe("Confirmation requise");
-      expect(formatApprovalDescription(undefined)).toBe("Confirmation requise");
+      expect(formatApprovalDescription(null)).toBe("Confirmation required");
+      expect(formatApprovalDescription(undefined)).toBe("Confirmation required");
     });
 
     it("formatApprovalCommand formats correctly with fallbacks", () => {
@@ -284,7 +284,7 @@ describe("approvalFlow", () => {
       );
 
       expect(State.pendingApproval?.tool).toBe("Tool");
-      expect(State.pendingApproval?.command).toBe("Commande à confirmer");
+      expect(State.pendingApproval?.command).toBe("Command to confirm");
     });
   });
 

@@ -14,15 +14,15 @@ export function buildApproval(actions: ViewActions): ViewHost {
     el,
     sync() {
       clear(who);
-      who.append(agentWho(State.focusTask, "demande d'autorisation"));
+      who.append(agentWho(State.focusTask, "authorization request"));
       const approval = State.pendingApproval;
       desc.textContent = formatApprovalDescription(approval);
       code.textContent = formatApprovalCommand(approval);
       clear(row);
       row.append(
-        btn("Refuser", "secondary", () => actions.decide("deny"), "N"),
-        btn("Toujours", "secondary", () => actions.decide("always")),
-        btn("Autoriser", "primary", () => actions.decide("once"), "Y"),
+        btn("Deny", "secondary", () => actions.decide("deny"), "N"),
+        btn("Always", "secondary", () => actions.decide("always")),
+        btn("Allow", "primary", () => actions.decide("once"), "Y"),
       );
     },
   };

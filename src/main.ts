@@ -27,6 +27,12 @@ async function main() {
 
   await onEvent<{ x: number; y: number }>(EVENT_NAMES.cursor, ({ x, y }) => island.onCursor(x, y));
 
+  // Windows OLE drop target (src-tauri file_drop.rs) — Tauri's onDragDropEvent
+  // often never fires when WebView2 owns the render HWND.
+  await onEvent<{ type: string; paths?: string[] }>(EVENT_NAMES.fileDrag, (e) => {
+    island.handleFileDrag(e);
+  });
+
   /** Pause has to reach Rust too, or the pollers keep calling out. */
   const setPaused = (on: boolean) => {
     if (State.paused === on) return;

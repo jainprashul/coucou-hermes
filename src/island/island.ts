@@ -385,6 +385,8 @@ export class Island {
       State.lastActivity = performance.now();
     });
 
+    // Prefer Tauri's webview drag API; on Windows it often never fires (WebView2
+    // HWND race). Rust also emits `file-drag` from our own OLE target — see main.
     void onDragDrop((e) => this.dropFlow.handleDragDrop(e));
 
     // Outside Tauri (plain browser) drive the cursor from DOM events so the
@@ -392,6 +394,11 @@ export class Island {
     if (!IS_TAURI) {
       window.addEventListener("mousemove", (e) => this.onCursor(e.clientX, e.clientY));
     }
+  }
+
+  /** OLE / Tauri drag payload from the bridge. */
+  handleFileDrag(e: { type: string; paths?: string[] }) {
+    this.dropFlow.handleDragDrop(e);
   }
 
   /** Cursor in window-logical coordinates. */

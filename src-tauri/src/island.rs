@@ -13,11 +13,7 @@ use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, Monitor, PhysicalPosition, PhysicalSize, WebviewWindow};
 
 use windows::Win32::Foundation::{HWND, POINT};
-use windows::core::BOOL;
-use windows::Win32::Foundation::LPARAM;
-use windows::Win32::System::Ole::RevokeDragDrop;
 use windows::Win32::UI::Input::KeyboardAndMouse::{GetAsyncKeyState, VK_LBUTTON};
-use windows::Win32::UI::WindowsAndMessaging::{EnumChildWindows, GetClassNameW};
 use windows::Win32::UI::WindowsAndMessaging::{
     GetCursorPos, GetWindowLongPtrW, SetWindowLongPtrW, GWL_EXSTYLE, WS_EX_NOACTIVATE,
     WS_EX_TOOLWINDOW,
@@ -35,6 +31,52 @@ pub const WINDOW_LABEL: &str = "island";
 /// Margin around the island that still counts as "on the island", in logical px.
 /// Wider than the macOS 6 pt because a click must never be swallowed.
 const HIT_MARGIN: f64 = 14.0;
+
+/// Cursor must move at least this far (logical px) before we re-emit `cursor`.
+const CURSOR_EMIT_EPS: f64 = 1.0;
+
+/// Pure per-tick plan for the cursor poll — drag/click-through must update even
+/// when the cursor is still, otherwise OLE never finds the window.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CursorPollPlan {
+    /// Emit a `cursor` event to the webview (position changed enough).
+    pub emit_cursor: bool,
+    /// Revoke WebView2's drop target so wry/Tauri can receive the file.
+    pub unblock_drops: bool,
+    /// Window should accept mouse/OLE hits (`!ignore_cursor_events`).
+    pub accept_input: bool,
+}
+
+/// Decide emit / unblock / accept for one poll tick.
+///
+/// `was_accepting` is the previous tick's `accept_input`. Unblock runs on the
+/// left-button press edge and again when the window first starts accepting
+/// hits while a button is held.
+///
+/// While LMB is held *anywhere*, the window must not be click-through. If we
+/// wait until the cursor is already over the panel, OLE has already skipped us
+/// under `WS_EX_TRANSPARENT` and will not retry `DragEnter` until the next
+/// move after we clear the flag — a still hover never recovers.
+pub fn plan_cursor_poll_tick(
+    x: f64,
+    y: f64,
+    last: (f64, f64),
+    down: bool,
+    was_down: bool,
+    on_island: bool,
+    _in_panel: bool,
+    was_accepting: bool,
+    move_eps: f64,
+) -> CursorPollPlan {
+    let moved = (x - last.0).abs() >= move_eps || (y - last.1).abs() >= move_eps;
+    let accept_input = on_island || down;
+    let unblock_drops = (down && !was_down) || (down && accept_input && !was_accepting);
+    CursorPollPlan {
+        emit_cursor: moved,
+        unblock_drops,
+        accept_input,
+    }
+}
 
 #[derive(Serialize, Clone)]
 pub struct CursorPayload {
@@ -120,37 +162,13 @@ fn cursor_physical() -> Option<(f64, f64)> {
     Some((p.x as f64, p.y as f64))
 }
 
-/// Lets dropped files reach the app again.
+/// Re-register our OLE file-drop target on the live WebView2 HWNDs.
 ///
-/// wry installs its drop target by walking the webview's child windows **once**,
-/// when the webview is created. WebView2 creates `Chrome_RenderWidgetHostHWND`
-/// later and registers its own target on it; being the innermost window, that one
-/// wins, and since the page has no HTML5 drop handler it refuses everything — the
-/// "no drop" cursor, with nothing reaching Tauri. Revoking it makes OLE fall
-/// through to the target wry registered on the parent widget, which is the one
-/// that feeds Tauri's drag events.
-///
-/// Cheap and idempotent, so it is simply re-run whenever a drag might be starting.
+/// wry's one-shot registration often misses `Chrome_RenderWidgetHostHWND`
+/// (especially in `tauri dev`); revoking alone is not enough if wry never
+/// landed on the right HWND. See `file_drop::ensure_targets`.
 pub fn unblock_webview_drops(app: &AppHandle) {
-    for label in [WINDOW_LABEL, "settings"] {
-        let Some(win) = app.get_webview_window(label) else { continue };
-        let Some(hwnd) = hwnd_of(&win) else { continue };
-        unsafe {
-            let _ = EnumChildWindows(Some(hwnd), Some(revoke_render_widget), LPARAM(0));
-        }
-    }
-}
-
-unsafe extern "system" fn revoke_render_widget(hwnd: HWND, _: LPARAM) -> BOOL {
-    let mut name = [0u16; 64];
-    let len = unsafe { GetClassNameW(hwnd, &mut name) };
-    if len > 0 {
-        let class = String::from_utf16_lossy(&name[..len as usize]);
-        if class == "Chrome_RenderWidgetHostHWND" {
-            let _ = unsafe { RevokeDragDrop(hwnd) };
-        }
-    }
-    true.into()
+    crate::file_drop::ensure_targets(app);
 }
 
 /// True while the left mouse button is held — the only signal we get that a
@@ -282,6 +300,9 @@ pub fn spawn_cursor_poll(app: AppHandle, gate: Arc<PollGate>) {
             gate.wait_until_active();
             let mut last = (f64::MIN, f64::MIN);
             let mut ticks: u32 = 0;
+            // A wake (or first start) must re-evaluate click-through even if the
+            // cursor has not moved — the island shape may have changed under it.
+            let mut was_accepting = false;
             while gate.is_active() {
                 std::thread::sleep(Duration::from_millis(16));
 
@@ -312,10 +333,6 @@ pub fn spawn_cursor_poll(app: AppHandle, gate: Arc<PollGate>) {
                     Ok(s) => (s.width as f64 / scale, s.height as f64 / scale),
                     Err(_) => (PANEL_W, PANEL_H),
                 };
-                if (x - last.0).abs() < 1.0 && (y - last.1).abs() < 1.0 {
-                    continue;
-                }
-                last = (x, y);
 
                 // Click-through: the window only takes the mouse over the island
                 // shape. A small entry margin means the flag is already off by the
@@ -326,6 +343,7 @@ pub fn spawn_cursor_poll(app: AppHandle, gate: Arc<PollGate>) {
                     && x <= r.x + r.w + HIT_MARGIN
                     && y >= r.y - HIT_MARGIN
                     && y <= r.y + r.h + HIT_MARGIN;
+                let in_panel = x >= 0.0 && x <= size.0 && y >= 0.0 && y <= size.1;
 
                 // A file being dragged has to be able to find us. WS_EX_TRANSPARENT
                 // — what click-through is on Windows — hides the window from
@@ -334,28 +352,39 @@ pub fn spawn_cursor_poll(app: AppHandle, gate: Arc<PollGate>) {
                 // registered destinations whatever ignoresMouseEvents says. So while
                 // a button is held anywhere over the panel, the whole panel takes
                 // the mouse, which also makes the drop zone as forgiving as the Mac's.
-                // A press may be the start of a drag: make sure the drop target is
-                // ours before the file arrives.
+                //
+                // IMPORTANT: this must run even when the cursor is still. Skipping
+                // it on a <1px move left click-through stuck on and missed the
+                // LMB edge that triggers unblock_webview_drops — so drops failed.
                 let down = left_button_down();
-                if down && !was_down {
+                let plan = plan_cursor_poll_tick(
+                    x,
+                    y,
+                    last,
+                    down,
+                    was_down,
+                    on_island,
+                    in_panel,
+                    was_accepting,
+                    CURSOR_EMIT_EPS,
+                );
+                was_down = down;
+                was_accepting = plan.accept_input;
+
+                if plan.unblock_drops {
                     let handle = app.clone();
                     let _ = app.run_on_main_thread(move || unblock_webview_drops(&handle));
                 }
-                was_down = down;
 
-                let dragging = down
-                    && x >= 0.0
-                    && x <= size.0
-                    && y >= 0.0
-                    && y <= size.1;
-
-                let accept = on_island || dragging;
-                if gate.ignoring.load(Ordering::Relaxed) == accept {
-                    gate.ignoring.store(!accept, Ordering::Relaxed);
-                    let _ = win.set_ignore_cursor_events(!accept);
+                if gate.ignoring.load(Ordering::Relaxed) == plan.accept_input {
+                    gate.ignoring.store(!plan.accept_input, Ordering::Relaxed);
+                    let _ = win.set_ignore_cursor_events(!plan.accept_input);
                 }
 
-                let _ = win.emit(crate::events::CURSOR, CursorPayload { x, y });
+                if plan.emit_cursor {
+                    last = (x, y);
+                    let _ = win.emit(crate::events::CURSOR, CursorPayload { x, y });
+                }
             }
         }
     });
@@ -364,5 +393,103 @@ pub fn spawn_cursor_poll(app: AppHandle, gate: Arc<PollGate>) {
 pub fn set_ignore_cursor(app: &AppHandle, ignore: bool) {
     if let Some(win) = window(app) {
         let _ = win.set_ignore_cursor_events(ignore);
+    }
+}
+
+/// WebView2 creates `Chrome_RenderWidgetHostHWND` after wry's one-shot
+/// EnumChildWindows. Re-run unblock a few times after boot (and after the
+/// window grows back from the wake strip) so a late HWND does not keep the
+/// "no drop" cursor in `tauri dev`.
+pub fn schedule_drop_unblock(app: &AppHandle) {
+    let handle = app.clone();
+    std::thread::spawn(move || {
+        for delay_ms in [50_u64, 300, 1000, 2500] {
+            std::thread::sleep(Duration::from_millis(delay_ms));
+            let app = handle.clone();
+            let _ = handle.run_on_main_thread(move || unblock_webview_drops(&app));
+        }
+    });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{plan_cursor_poll_tick, CURSOR_EMIT_EPS};
+
+    #[test]
+    fn still_cursor_still_updates_accept_and_unblocks_on_press() {
+        // Old bug: a <1px move short-circuited the whole tick, so a press with a
+        // still cursor never cleared click-through or revoked WebView2's target.
+        let plan = plan_cursor_poll_tick(
+            10.0,
+            10.0,
+            (10.0, 10.0),
+            true,
+            false,
+            true,
+            true,
+            false,
+            CURSOR_EMIT_EPS,
+        );
+        assert!(!plan.emit_cursor, "still cursor must not spam cursor events");
+        assert!(plan.accept_input);
+        assert!(plan.unblock_drops, "LMB edge must unblock drops even when still");
+    }
+
+    #[test]
+    fn lmb_down_anywhere_clears_click_through_before_cursor_arrives() {
+        // Button already down in Explorer; cursor still outside the island shape.
+        let plan = plan_cursor_poll_tick(
+            -50.0,
+            -50.0,
+            (-51.0, -50.0),
+            true,
+            true,
+            false,
+            false,
+            false,
+            CURSOR_EMIT_EPS,
+        );
+        assert!(plan.emit_cursor);
+        assert!(
+            plan.accept_input,
+            "LMB held must clear WS_EX_TRANSPARENT before OLE hit-tests us"
+        );
+        assert!(plan.unblock_drops);
+    }
+
+    #[test]
+    fn outside_without_button_stays_click_through() {
+        let plan = plan_cursor_poll_tick(
+            100.0,
+            100.0,
+            (0.0, 0.0),
+            false,
+            false,
+            false,
+            false,
+            false,
+            CURSOR_EMIT_EPS,
+        );
+        assert!(plan.emit_cursor);
+        assert!(!plan.accept_input);
+        assert!(!plan.unblock_drops);
+    }
+
+    #[test]
+    fn redundant_accepting_drag_does_not_spam_unblock() {
+        let plan = plan_cursor_poll_tick(
+            10.0,
+            10.0,
+            (10.0, 10.0),
+            true,
+            true,
+            true,
+            true,
+            true,
+            CURSOR_EMIT_EPS,
+        );
+        assert!(plan.accept_input);
+        assert!(!plan.unblock_drops);
+        assert!(!plan.emit_cursor);
     }
 }

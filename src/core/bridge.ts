@@ -175,9 +175,14 @@ export interface DragDropPayload {
 
 export async function onDragDrop(handler: (e: DragDropPayload) => void) {
   if (!IS_TAURI) return () => {};
-  return getCurrentWebview().onDragDropEvent((event) => {
-    handler(event.payload as DragDropPayload);
-  });
+  try {
+    return await getCurrentWebview().onDragDropEvent((event) => {
+      handler(event.payload as DragDropPayload);
+    });
+  } catch (err) {
+    console.error("[coucou] onDragDrop listen failed", err);
+    return () => {};
+  }
 }
 
 export async function onEvent<T>(name: string, handler: (payload: T) => void) {

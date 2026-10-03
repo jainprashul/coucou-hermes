@@ -3,6 +3,7 @@
 mod claude;
 mod cursor_hooks;
 mod events;
+mod file_drop;
 mod files;
 mod hermes_api;
 mod hermes_hooks;
@@ -112,6 +113,12 @@ fn set_collapsed(app: AppHandle, shared: State<Shared>, collapsed: bool) {
     island::set_ignore_cursor(&app, false);
     shared.gate.forget_ignore_state();
     shared.gate.set_active(!collapsed);
+    // WebView2 child HWNDs reshuffle on resize; keep OLE falling through to wry
+    // whether we just shrank to the wake strip or grew back to the panel.
+    island::unblock_webview_drops(&app);
+    if !collapsed {
+        island::schedule_drop_unblock(&app);
+    }
 }
 
 /// The front end pushes the island shape; Rust decides click-through from it.
@@ -583,7 +590,11 @@ pub fn run() {
             }
             gate.collapsed.store(false, Ordering::Relaxed);
             gate.set_active(true);
+            file_drop::init(handle.clone());
             island::spawn_cursor_poll(handle.clone(), gate.clone());
+            // wry registers before WebView2 finishes creating the render HWND
+            // (especially under `tauri dev`). Re-register our OLE target.
+            island::schedule_drop_unblock(&handle);
 
             log::line(format!("--- Coucou Hermes {} started ---", env!("CARGO_PKG_VERSION")));
             hooks::ensure_hook_exe(&handle);

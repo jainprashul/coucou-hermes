@@ -133,7 +133,7 @@ export function lastPathComponent(p: string): string {
   return idx >= 0 ? cleaned.slice(idx + 1) : cleaned;
 }
 
-/** frenchStep() — same labels as the macOS app (shared with the Hermes gateway handler). */
+/** Step ticker label — shared with the Hermes gateway handler. */
 export function stepLabel(tool: string, input: Record<string, unknown>): string {
   const label = toolLabel(tool);
   const str = (k: string) => (typeof input[k] === "string" ? (input[k] as string) : null);

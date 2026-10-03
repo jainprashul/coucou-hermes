@@ -29,5 +29,7 @@ pub const SCREEN_CHANGED: &str = "screen-changed";
 pub const INTEGRATION: &str = "integration";
 /// The island's cursor position, consumed by the front end for hit-testing.
 pub const CURSOR: &str = "cursor";
+/// OLE file drag/drop from our Win32 drop target (`enter` / `over` / `drop` / `leave`).
+pub const FILE_DRAG: &str = "file-drag";
 /// Settings changed; both windows re-render from the payload.
 pub const SETTINGS_CHANGED: &str = "settings-changed";

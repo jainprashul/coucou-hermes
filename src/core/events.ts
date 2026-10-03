@@ -12,4 +12,6 @@ export const EVENT_NAMES = {
   hermesClarify: "hermes-clarify",
   integration: "integration",
   hook: "hook",
+  /** Win32 OLE drop target (fallback when Tauri's webview drag events never fire). */
+  fileDrag: "file-drag",
 } as const;

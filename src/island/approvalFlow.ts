@@ -56,7 +56,7 @@ export function surfaceApprovalView(
 
 /** Formats approval request description with fallback. */
 export function formatApprovalDescription(approval: ApprovalInfo | null | undefined): string {
-  return approval?.description || (approval?.tool ? `Tool: ${approval.tool}` : "Confirmation requise");
+  return approval?.description || (approval?.tool ? `Tool: ${approval.tool}` : "Confirmation required");
 }
 
 /** Formats approval command or tool preview with fallback. */
@@ -92,7 +92,7 @@ export function handleHermesApproval(
     requestId: payload.requestId,
     sessionId: payload.sessionId,
     tool: payload.toolName || "Tool",
-    command: payload.command || payload.description || "Commande à confirmer",
+    command: payload.command || payload.description || "Command to confirm",
     description: payload.description,
     choices: payload.choices,
   };
