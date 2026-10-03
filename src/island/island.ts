@@ -1,24 +1,25 @@
 // The island: DOM shell, sizing animation, Mochi placement, mouse handling.
 // Mirrors IslandRootView.swift + IslandWindowController.swift.
 
-import { Tracked, Spring, clamp } from "../core/anim";
+import { Spring } from "../core/anim";
 import { Bridge, IS_TAURI, onDragDrop } from "../core/bridge";
 import {
-  EXPANDED_CORNER, EXPANDED_W, NOTCH_W, PANEL_H, PANEL_W,
-  ROUNDED_CORNER, VIEW_LAYOUTS, botGlowColor, botGlowOpacity, botPosition, chatPromptHeight,
-  islandSize,
+  EXPANDED_W, PANEL_H, PANEL_W,
+  VIEW_LAYOUTS, botGlowColor, botGlowOpacity, botPosition, chatPromptHeight,
   type IslandMode, type IslandViewName,
 } from "../core/layout";
 import { Sound } from "../core/sound";
 import { State } from "../core/state";
 import { BotEngine, hexToRGB } from "../mochi/engine";
 import { Greeting } from "../mochi/greeting";
-import { createMiniBot, pruneMiniBots, syncMiniBotStates, tickMiniBots } from "../mochi/minibots";
+import { tickMiniBots } from "../mochi/minibots";
 import { UploadCanvas } from "../upload/canvas";
 import { USC, UploadSeq } from "../upload/sequence";
 import { buildHeader, buildViews, type ViewActions, type ViewHost } from "../views/views";
 import { h } from "../views/dom";
 import { IslandStateMachine } from "./fsm";
+import { IslandGeometry, type IslandRect } from "./geometry";
+import { syncIslandDom, syncViewFocus, updateCountdown } from "./sync";
 
 const BOT_OVERHANG = 40;
 /** Same margin as the Rust hit test (src-tauri/src/island.rs). */
@@ -51,9 +52,7 @@ export class Island {
   private views!: Map<IslandViewName, ViewHost>;
   private uploadCanvas!: UploadCanvas;
 
-  private width = new Tracked(NOTCH_W);
-  private height = new Tracked(0);
-  private radius = new Tracked(ROUNDED_CORNER);
+  private geometry = new IslandGeometry();
   private botCx = new Spring(46);
   private botCy = new Spring(16);
   private botSize = new Spring(10);
@@ -70,8 +69,6 @@ export class Island {
   private collapsed = false;
   private collapseTimer: number | null = null;
   private wasInIsland = false;
-  /** Last shape handed to Rust for the click-through test. */
-  private pushedRect = { x: -1, y: -1, w: -1, h: -1 };
   private homeCollapseAt: number | null = null;
 
   // Bot hover → love (IslandWindowController.botHoverIn)
@@ -466,54 +463,23 @@ export class Island {
 
   // ── Geometry ────────────────────────────────────────────────────────────────
 
-  private targetSize(): { w: number; h: number; r: number } {
-    const { w, h } = islandSize(State.mode, State.view, State.chatHistory.length);
-    const r = State.mode === "expanded" ? EXPANDED_CORNER : ROUNDED_CORNER;
-    return { w, h, r };
-  }
-
   private animateGeometry(shrinking: boolean) {
-    const { w, h, r } = this.targetSize();
-    if (shrinking) {
-      this.width.curveTowards(w);
-      this.height.curveTowards(h);
-      this.radius.curveTowards(r);
-    } else {
-      this.width.springTo(w);
-      this.height.springTo(h);
-      this.radius.springTo(r);
-    }
+    this.geometry.animate(shrinking);
     this.ensureRunning();
   }
 
   private applyGeometry() {
-    const w = this.width.value;
-    const hh = this.height.value;
-    const r = this.radius.value;
-    this.islandEl.style.width = `${w}px`;
-    this.islandEl.style.height = `${hh}px`;
-    this.islandEl.style.borderRadius = `0 0 ${r}px ${r}px`;
-    this.islandEl.style.transform = `translateX(-50%)`;
-    // These follow the island as it resizes, so they belong here rather than in
-    // the state-driven DOM sync.
-    this.miniGrid.style.left = `${w - 40 - 14.5}px`;
-    this.miniGrid.style.top = `${hh / 2 - 14.5}px`;
-    this.greetingCanvas.style.left = `${(w - EXPANDED_W) / 2}px`;
-    this.uploadCanvas.el.style.left = `${(w - EXPANDED_W) / 2}px`;
-
-    const rect = { x: (PANEL_W - w) / 2, y: 0, w, h: hh };
-    const p = this.pushedRect;
-    if (Math.abs(p.x - rect.x) > 0.5 || Math.abs(p.w - rect.w) > 0.5 || Math.abs(p.h - rect.h) > 0.5) {
-      this.pushedRect = rect;
-      void Bridge.setIslandRect(rect.x, rect.y, rect.w, rect.h);
-    }
+    this.geometry.apply({
+      islandEl: this.islandEl,
+      miniGrid: this.miniGrid,
+      greetingCanvas: this.greetingCanvas,
+      uploadCanvasEl: this.uploadCanvas.el,
+    });
   }
 
   /** Island rect in window coordinates (origin top-left of the 720×320 window). */
-  private islandRect(): { x: number; y: number; w: number; h: number } {
-    const w = this.width.value;
-    const hh = this.height.value;
-    return { x: (PANEL_W - w) / 2, y: 0, w, h: hh };
+  private islandRect(): IslandRect {
+    return this.geometry.rect();
   }
 
   // ── Window collapse (hidden → tiny wake strip, zero polling) ────────────────
@@ -688,9 +654,7 @@ export class Island {
     const dt = Math.min(0.05, (nowMs - this.lastFrame) / 1000);
     this.lastFrame = nowMs;
 
-    this.width.step(dt, nowMs);
-    this.height.step(dt, nowMs);
-    this.radius.step(dt, nowMs);
+    this.geometry.step(dt, nowMs);
     this.applyGeometry();
 
     if (this.dirty) {
@@ -733,8 +697,7 @@ export class Island {
     // looping animation — breathing, ratelimit sweat, sleeping z's, the search
     // sweep — so a hidden island went on burning frames in exactly the states it
     // spends most of its life in. Geometry still has to finish retracting.
-    const settling =
-      this.width.animating || this.height.animating || this.radius.animating;
+    const settling = this.geometry.animating;
     const busy = State.mode === "hidden"
       ? settling
       : settling ||
@@ -750,7 +713,7 @@ export class Island {
   };
 
   private updateBotTargets() {
-    const p = botPosition(State.mode, State.view, this.height.value, State.uploadProgress);
+    const p = botPosition(State.mode, State.view, this.geometry.h, State.uploadProgress);
     this.botCx.target = p.cx;
     this.botCy.target = p.cy;
     this.botSize.target = p.diameter / 0.6;
@@ -825,64 +788,38 @@ export class Island {
   }
 
   private updateCountdown(nowMs: number) {
-    if (State.mode !== "expanded" || State.isPinned || this.homeCollapseAt == null) {
-      this.countdown.style.width = "0px";
-      return;
-    }
-    const autoClose = State.settings.autoCloseInterval;
-    const windowS = Math.min(10, autoClose * 0.6);
-    const remaining = (this.homeCollapseAt - nowMs) / 1000;
-    this.countdown.style.width =
-      remaining < windowS ? `${Math.max(0, clamp(remaining / windowS, 0, 1) * 160)}px` : "0px";
+    updateCountdown(this.countdown, {
+      expanded: State.mode === "expanded",
+      pinned: State.isPinned,
+      homeCollapseAt: this.homeCollapseAt,
+      autoCloseInterval: State.settings.autoCloseInterval,
+      nowMs,
+    });
   }
 
   // ── DOM sync ────────────────────────────────────────────────────────────────
 
   private syncDom() {
-    const expanded = State.mode === "expanded";
-    const greetingActive = expanded && State.view === "greeting";
-
-    this.contentEl.style.opacity = expanded && !greetingActive ? "1" : "0";
-    this.contentEl.style.pointerEvents = expanded && !greetingActive ? "auto" : "none";
-    this.greetingCanvas.style.display = greetingActive ? "block" : "none";
-
-    this.header.sync();
-    for (const [name, view] of this.views) {
-      const on = name === State.view;
-      view.el.classList.toggle("on", on);
-      if (on) view.sync();
-    }
-
-    // The chat is the only view with a text field, so it is the only time the
-    // island is allowed to take keyboard focus.
-    if (this.lastSyncedView !== State.view) {
-      const wasChat = this.lastSyncedView === "prompt";
-      this.lastSyncedView = State.view;
-      if (State.view === "prompt") {
-        void Bridge.focusWindow(true);
-        window.setTimeout(() => this.views.get("prompt")?.focus?.(), 120);
-      } else if (wasChat) {
-        void Bridge.focusWindow(false);
-      }
-    }
-
-    // Compact mini grid
-    const showGrid = State.mode === "compact";
-    this.miniGrid.style.opacity = showGrid ? "1" : "0";
-    if (showGrid) {
-      const others = State.otherTasks.slice(0, 4);
-      const key = others.map((t) => t.id).join("|");
-      if (this.miniGrid.dataset.key !== key) {
-        this.miniGrid.dataset.key = key;
-        this.miniGrid.replaceChildren();
-        for (const t of others) {
-          this.miniGrid.append(createMiniBot(t, 13));
-        }
-        pruneMiniBots();
-      }
-    }
-
-    syncMiniBotStates(State.tasks);
+    this.lastSyncedView = syncViewFocus(
+      this.lastSyncedView,
+      State.view,
+      () => this.views.get("prompt")?.focus?.(),
+    );
+    syncIslandDom(
+      {
+        contentEl: this.contentEl,
+        greetingCanvas: this.greetingCanvas,
+        miniGrid: this.miniGrid,
+        header: this.header,
+        views: this.views,
+      },
+      {
+        mode: State.mode,
+        view: State.view,
+        tasks: State.tasks,
+        otherTasks: State.otherTasks,
+      },
+    );
     this.engine.setState(State.effectiveState);
   }
 
