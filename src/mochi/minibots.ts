@@ -64,8 +64,15 @@ export function pruneMiniBots() {
 }
 
 export function syncMiniBotStates(tasks: AgentTask[]) {
+  if (live.size === 0 || tasks.length === 0) return;
+  const taskById = new Map<string, AgentTask>();
+  for (const task of tasks) {
+    if (!taskById.has(task.id)) {
+      taskById.set(task.id, task);
+    }
+  }
   for (const mb of live.values()) {
-    const task = tasks.find((t) => t.id === mb.taskId);
+    const task = taskById.get(mb.taskId);
     if (!task) continue;
     mb.engine.setState(task.state);
     mb.engine.bodyColor = hexToRGB(task.color);
