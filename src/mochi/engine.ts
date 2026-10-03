@@ -4,7 +4,7 @@
 // (design/prototype/notch-buddy.html, the visual source of truth) — the Swift
 // arc angles produce a different shape.
 
-import { Ease, lerp, type EaseFn } from "../core/anim";
+import { Ease, lerp } from "../core/anim";
 import { Sound } from "../core/sound";
 import type { BotEmoteName, BotStateName } from "../core/layout";
 import {
@@ -19,32 +19,39 @@ import {
   STATE_SOUND,
   EMOTE_EYE,
 } from "./engine/states";
+import {
+  type TweenKey,
+  type PropKey,
+  type Tween,
+  TweenManager,
+  TweenSystem,
+  createTween,
+  updateTweens,
+} from "./engine/tweens";
+import {
+  type Particle,
+  type ParticleType,
+  ParticleSystem,
+  ParticleManager,
+  createParticle,
+  spawnParticles,
+  updateParticles,
+} from "./engine/particles";
 
 export type { EyeShape, BadgeKind, Badge, RGB, BotStateCfg };
 export { C, BOT_STATE_COLORS, BOT_STATES, STATE_SOUND, EMOTE_EYE };
 
-// ── Types ─────────────────────────────────────────────────────────────────────
+export type { TweenKey, PropKey, Tween };
+export { TweenManager, TweenSystem, createTween, updateTweens };
 
-export type TweenKey = readonly [target: number, durationMs: number, ease: EaseFn];
-
-interface Tween {
-  prop: PropKey;
-  keys: TweenKey[];
-  index: number;
-  from: number;
-  startMs: number;
-  onComplete?: () => void;
-}
-
-type PropKey =
-  | "yaw" | "pitch" | "roll" | "tilt" | "open" | "sx" | "sy"
-  | "oy" | "ox" | "tint" | "morph" | "hands" | "blush" | "es" | "badgeS";
-
-interface Particle {
-  type: "heart" | "star" | "spark" | "sweat" | "z";
-  x: number; y: number; vx: number; vy: number;
-  age: number; life: number; rot: number; size: number;
-}
+export type { Particle, ParticleType };
+export {
+  ParticleSystem,
+  ParticleManager,
+  createParticle,
+  spawnParticles,
+  updateParticles,
+};
 
 // ── Constants (MochiConst / PISTES.mochi) ─────────────────────────────────────
 
@@ -143,9 +150,16 @@ export class BotEngine {
   private badgeKey = "none";
   private badgeToken = 0;
 
-  private tweens = new Map<PropKey, Tween>();
-  private locks = new Set<PropKey>();
-  private particles: Particle[] = [];
+  private tweens = new TweenManager();
+  private particleSystem = new ParticleSystem();
+
+  private get locks(): ReadonlySet<PropKey> {
+    return this.tweens.locks;
+  }
+
+  get particles(): Particle[] {
+    return this.particleSystem.particles;
+  }
 
   lookX = 0;
   lookY = 0;
@@ -368,21 +382,8 @@ export class BotEngine {
     }
   }
 
-  emit(type: Particle["type"], count: number) {
-    for (let i = 0; i < count; i++) {
-      const isZ = type === "z";
-      this.particles.push({
-        type,
-        x: (Math.random() - 0.5) * 0.9 + (isZ ? 0.55 : 0),
-        y: -0.7 - Math.random() * 0.2,
-        vx: (Math.random() - 0.5) * 0.35 + (isZ ? 0.18 : 0),
-        vy: -(0.45 + Math.random() * 0.35),
-        age: -i * 0.14,
-        life: 1.3 + Math.random() * 0.5,
-        rot: Math.random() * Math.PI * 2,
-        size: 0.15 + Math.random() * 0.08,
-      });
-    }
+  emit(type: ParticleType, count: number) {
+    this.particleSystem.emit(type, count);
   }
 
   animateMorph(target: number, durationMs?: number) {
@@ -391,16 +392,15 @@ export class BotEngine {
   }
 
   resetMorph() {
-    this.tweens.delete("morph");
-    this.locks.delete("morph");
+    this.tweens.cancel("morph");
     this.morph = 0;
   }
 
   /** True while anything is still moving — lets the island stop its RAF loop. */
   get busy(): boolean {
     return (
-      this.tweens.size > 0 ||
-      this.particles.length > 0 ||
+      this.tweens.busy ||
+      this.particleSystem.busy ||
       this.cfg.bounces || this.cfg.scans || this.cfg.breathes || this.cfg.zz || this.cfg.sweat ||
       this.isMini ||
       Math.abs(this.tgYaw - this.yaw) > 0.002 ||
@@ -419,10 +419,7 @@ export class BotEngine {
   // ── Tweens ──────────────────────────────────────────────────────────────────
 
   anim(prop: PropKey, keys: TweenKey[], onComplete?: () => void) {
-    this.tweens.set(prop, {
-      prop, keys, index: 0, from: this[prop], startMs: performance.now(), onComplete,
-    });
-    this.locks.add(prop);
+    this.tweens.anim(prop, this[prop], keys, onComplete);
   }
 
   // ── Update ──────────────────────────────────────────────────────────────────
@@ -431,21 +428,7 @@ export class BotEngine {
     const n = now();
     const nowMs = performance.now();
 
-    for (const tw of [...this.tweens.values()]) {
-      const k = tw.keys[tw.index];
-      const p = Math.min(1, Math.max(0, (nowMs - tw.startMs) / k[1]));
-      this[tw.prop] = tw.from + (k[0] - tw.from) * k[2](p);
-      if (p >= 1) {
-        tw.from = k[0];
-        tw.index += 1;
-        tw.startMs = nowMs;
-        if (tw.index >= tw.keys.length) {
-          this.tweens.delete(tw.prop);
-          this.locks.delete(tw.prop);
-          tw.onComplete?.();
-        }
-      }
-    }
+    this.tweens.update(this as unknown as Record<PropKey, number>, nowMs);
 
     const t = n - this.t0;
     let ty = this.lookX * 0.62;
@@ -531,8 +514,7 @@ export class BotEngine {
       if (!this.isMini && this.cfg.sweat && Math.random() < 0.5) this.emit("sweat", 1);
     }
 
-    for (const p of this.particles) p.age += dt;
-    this.particles = this.particles.filter((p) => p.age < p.life);
+    this.particleSystem.update(dt);
 
     // Mouth slot spring — ω₀ = 2π/0.25, ζ = 0.6
     const omega = (2 * Math.PI) / 0.25;
