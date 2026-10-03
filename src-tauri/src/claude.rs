@@ -21,8 +21,6 @@ const MAX_TOKENS: u32 = 4096;
 /// Text and code files are inlined; anything larger is skipped, as on macOS.
 const MAX_INLINE_TEXT: u64 = 200_000;
 
-pub const DEFAULT_MODEL: &str = "claude-opus-5";
-
 const SYSTEM_PROMPT: &str = "You are Mochi, a personal AI assistant living at the top of the user's screen. \
 You have web search access and can help with absolutely anything — research, coding, finding places, recommendations, tasks, questions. \
 Respond in the user's language. Be thorough and complete — use as much detail as the task requires. \
