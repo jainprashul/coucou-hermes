@@ -7,6 +7,7 @@ import {
   toIslandCoords,
   detectIslandBoundary,
   calculateHomeCollapseTime,
+  planHomeCollapseAfterPinChange,
   handleWakeStripEnter,
   CursorTracker,
   WindowCollapseManager,
@@ -96,6 +97,44 @@ describe("calculateHomeCollapseTime", () => {
   it("computes timestamp from interval in seconds", () => {
     expect(calculateHomeCollapseTime(15, 1000)).toBe(16000);
     expect(calculateHomeCollapseTime(0, 5000)).toBe(5000);
+  });
+});
+
+describe("planHomeCollapseAfterPinChange", () => {
+  it("clears countdown when pinning", () => {
+    expect(
+      planHomeCollapseAfterPinChange({
+        pinned: true,
+        fsmState: "home",
+        mouseInIsland: false,
+        autoCloseInterval: 15,
+        nowMs: 1000,
+      }),
+    ).toEqual({ armCollapse: false, homeCollapseAt: null });
+  });
+
+  it("re-arms collapse when unpinning while mouse is outside home", () => {
+    expect(
+      planHomeCollapseAfterPinChange({
+        pinned: false,
+        fsmState: "home",
+        mouseInIsland: false,
+        autoCloseInterval: 15,
+        nowMs: 1000,
+      }),
+    ).toEqual({ armCollapse: true, homeCollapseAt: 16000 });
+  });
+
+  it("does not arm collapse when mouse is still over the island", () => {
+    expect(
+      planHomeCollapseAfterPinChange({
+        pinned: false,
+        fsmState: "home",
+        mouseInIsland: true,
+        autoCloseInterval: 15,
+        nowMs: 1000,
+      }),
+    ).toEqual({ armCollapse: false, homeCollapseAt: null });
   });
 });
 

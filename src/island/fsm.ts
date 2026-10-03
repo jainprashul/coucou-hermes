@@ -19,11 +19,17 @@ export class IslandStateMachine {
   /** An alert waiting for an answer stays open, even when the mouse leaves. */
   pinned = false;
 
-  private petitHide: number | null = null;
-  private homeCollapse: number | null = null;
-  private greetCollapse: number | null = null;
+  private petitHide: ReturnType<typeof setTimeout> | null = null;
+  private homeCollapse: ReturnType<typeof setTimeout> | null = null;
+  private greetCollapse: ReturnType<typeof setTimeout> | null = null;
 
   // ── Inputs ──────────────────────────────────────────────────────────────────
+
+  /** Pin blocks home→petit auto-close; pinning also cancels any pending collapse. */
+  setPinned(pinned: boolean) {
+    this.pinned = pinned;
+    if (pinned) this.clear("homeCollapse");
+  }
 
   launch() {
     this.cancelTimers();
@@ -106,7 +112,7 @@ export class IslandStateMachine {
 
   private schedulePetitHide() {
     this.clear("petitHide");
-    this.petitHide = window.setTimeout(() => {
+    this.petitHide = setTimeout(() => {
       this.petitHide = null;
       if (this.state === "petit") this.transition("hidden");
     }, this.petitToHiddenDelay * 1000);
@@ -115,7 +121,7 @@ export class IslandStateMachine {
   private scheduleHomeCollapse() {
     this.clear("homeCollapse");
     if (this.pinned) return;
-    this.homeCollapse = window.setTimeout(() => {
+    this.homeCollapse = setTimeout(() => {
       this.homeCollapse = null;
       if (this.state === "home") this.transition("petit");
     }, this.homeToPetitDelay * 1000);
@@ -123,7 +129,7 @@ export class IslandStateMachine {
 
   private scheduleGreetCollapse(delay: number) {
     this.clear("greetCollapse");
-    this.greetCollapse = window.setTimeout(() => {
+    this.greetCollapse = setTimeout(() => {
       this.greetCollapse = null;
       if (this.state === "coucou") this.transition("petit");
     }, delay * 1000);
@@ -131,7 +137,7 @@ export class IslandStateMachine {
 
   private clear(which: "petitHide" | "homeCollapse" | "greetCollapse") {
     const id = this[which];
-    if (id != null) window.clearTimeout(id);
+    if (id != null) clearTimeout(id);
     this[which] = null;
   }
 

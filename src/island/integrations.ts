@@ -47,7 +47,8 @@ export async function refreshConfigured() {
     ...cursorWsl,
     configured: cursorStatus?.wsl.installed ?? false,
   };
-  State.notify();
+  // Cursor / VS Code pills follow hook install state, not the 4-slot toggle.
+  State.loadIntegrationTasks();
 }
 
 function handle(island: Island, update: IntegrationUpdate) {

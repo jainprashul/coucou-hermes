@@ -63,12 +63,14 @@ export function buildOverview(actions: ViewActions): ViewHost {
         mode = null;
       }
 
-      // Hermes Agent or VS Code with an active session keeps the ticker;
+      // Hook agent sessions (Hermes / VS Code / Cursor) keep the ticker;
       // other pills show their own card.
       const isAgentSession =
         task?.id === "integration_hermes" ||
         task?.id === "integration_claude" ||
-        (task?.id && task.id.startsWith("subagent_"));
+        task?.id === "integration_cursor" ||
+        task?.id === "integration_cursor_wsl" ||
+        (task?.id && (task.id.startsWith("subagent_") || task.id.startsWith("agent_")));
       const sessionActive =
         isAgentSession && (task.state !== "idle" || task.steps.length > 0);
 
@@ -139,6 +141,10 @@ export function buildPill(task: AgentTask, actions: ViewActions): HTMLElement {
       ? "Codex"
       : task.id === "integration_claude"
       ? "VS Code"
+      : task.id === "integration_cursor"
+      ? "Cursor"
+      : task.id === "integration_cursor_wsl"
+      ? "WSL Cursor"
       : task.name;
   const canvas = createMiniBot(task, 24);
   const pill = h(

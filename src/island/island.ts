@@ -41,11 +41,10 @@ import {
   calculateHomeCollapseTime,
   handleWakeStripEnter,
   isPointInBot,
+  planHomeCollapseAfterPinChange,
 } from "./cursor";
 import {
   DropFlowController,
-  dropPin,
-  pinForAlert,
   revealIsland,
   syncUploadDom,
   triggerAlert,
@@ -146,9 +145,7 @@ export class Island {
     const actions = createViewActions({
       setView: (v) => this.setView(v),
       collapse: () => this.collapse(),
-      setPinned: (pinned) => {
-        this.fsm.pinned = pinned;
-      },
+      setPinned: (pinned) => this.applyPinned(pinned),
       setAutoCloseDelay: (s) => {
         this.fsm.homeToPetitDelay = s;
       },
@@ -237,6 +234,7 @@ export class Island {
     if (prev === "expanded") {
       Sound.play("close");
       State.isPinned = false;
+      this.fsm.setPinned(false);
       void Bridge.focusWindow(false);
     }
     if (mode !== "expanded") {
@@ -289,7 +287,8 @@ export class Island {
 
   collapse() {
     State.isPinned = false;
-    this.fsm.pinned = false;
+    this.fsm.setPinned(false);
+    this.homeCollapseAt = null;
     // Drive the state machine rather than the mode: setting the mode behind its
     // back left it thinking the island was still open, and a click on the compact
     // island then did nothing — the island could never be reopened.
@@ -303,7 +302,7 @@ export class Island {
 
   /** Sync FSM pin when an alert surfaces while already expanded (setView path). */
   pinForAlert() {
-    pinForAlert(this.fsm);
+    this.applyPinned(true);
   }
 
   reveal() {
@@ -312,7 +311,25 @@ export class Island {
 
   /** An alert stopped waiting for an answer: let the island auto-close again. */
   dropPin() {
-    dropPin(this.fsm);
+    this.applyPinned(false);
+  }
+
+  /**
+   * Keep State + FSM pin in sync. Unpinning while the cursor is already outside
+   * re-arms home→petit auto-close (mouseLeft was a no-op while pinned).
+   */
+  private applyPinned(pinned: boolean) {
+    State.isPinned = pinned;
+    this.fsm.setPinned(pinned);
+    const plan = planHomeCollapseAfterPinChange({
+      pinned,
+      fsmState: this.fsm.state,
+      mouseInIsland: this.wasInIsland,
+      autoCloseInterval: State.settings.autoCloseInterval,
+      nowMs: performance.now(),
+    });
+    this.homeCollapseAt = plan.homeCollapseAt;
+    if (plan.armCollapse) this.fsm.mouseLeft();
   }
 
   // ── Geometry ────────────────────────────────────────────────────────────────

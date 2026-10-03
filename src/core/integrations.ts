@@ -26,6 +26,17 @@ export const TOGGLEABLE_INTEGRATION_IDS = [
   "subagent_antigravity", "subagent_codex", "integration_github", "integration_vercel", "integration_n8n",
 ];
 
+/** Hook-backed agent pills — shown when their hooks are installed, not via the 4-slot toggle. */
+export const HOOK_AGENT_IDS = [
+  "integration_claude",
+  "integration_cursor",
+  "integration_cursor_wsl",
+] as const;
+
+export function isHookAgentId(id: string): boolean {
+  return (HOOK_AGENT_IDS as readonly string[]).includes(id);
+}
+
 /** Maximum number of toggleable pills shown next to Mochi. */
 export const MAX_ACTIVE_INTEGRATIONS = 4;
 

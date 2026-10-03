@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
-import { State, type AgentTask } from "./state";
+import { DEFAULT_SETTINGS, State, type AgentTask } from "./state";
 
 function makeTask(id: string, name = `Task ${id}`, state: any = "idle"): AgentTask {
   return {
@@ -19,6 +19,8 @@ describe("AppState task lookup and indexing", () => {
     State.tasks = [];
     State.focusId = null;
     State.stateOverride = null;
+    State.settings = { ...DEFAULT_SETTINGS };
+    State.integrations = {};
   });
 
   it("returns null for findTask when id is null, undefined, or empty", () => {
@@ -128,6 +130,39 @@ describe("AppState task lookup and indexing", () => {
     // 3. removeTask
     State.removeTask("external_agent_1");
     expect(State.findTask("external_agent_1")).toBeNull();
+  });
+
+  it("loads Cursor / VS Code pills when their hooks are configured", () => {
+    State.settings = {
+      ...State.settings,
+      activeIntegrations: [],
+      hooksInstalled: false,
+    };
+    State.integrations = {};
+    State.tasks = [];
+
+    State.loadIntegrationTasks();
+    expect(State.findTask("integration_hermes")).not.toBeNull();
+    expect(State.findTask("integration_cursor")).toBeNull();
+    expect(State.findTask("integration_claude")).toBeNull();
+
+    State.integrations.integration_cursor = {
+      data: {}, error: null, loaded: false, configured: true,
+    };
+    State.settings.hooksInstalled = true;
+    State.loadIntegrationTasks();
+
+    expect(State.findTask("integration_cursor")).not.toBeNull();
+    expect(State.findTask("integration_claude")).not.toBeNull();
+    expect(State.findTask("integration_cursor_wsl")).toBeNull();
+  });
+
+  it("ensureBuiltinAgent creates a Cursor pill and marks it configured", () => {
+    State.tasks = [];
+    State.integrations = {};
+    State.ensureBuiltinAgent("integration_cursor");
+    expect(State.findTask("integration_cursor")?.name).toBe("Cursor");
+    expect(State.integrations.integration_cursor?.configured).toBe(true);
   });
 
   it("rebuilds index when tasks array is reassigned", () => {

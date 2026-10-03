@@ -78,10 +78,19 @@ function idleCard(task: AgentTask, openSettings: () => void): HTMLElement {
   const info = State.integrations[task.id];
   const configured = info?.configured ?? false;
   const error = info?.error ?? null;
-  // The Claude Code pill is about hooks, not a key — the macOS wording would be
-  // misleading here.
-  const missing = task.id === "integration_claude" ? "Hooks not installed" : "Key not configured";
-  const label = error ?? (configured ? "Connected · loading…" : missing);
+  // Hook agent pills are about hooks, not API keys — they don't "load" poll data.
+  const isHookAgent =
+    task.id === "integration_claude" ||
+    task.id === "integration_cursor" ||
+    task.id === "integration_cursor_wsl";
+  const missing = isHookAgent ? "Hooks not installed" : "Key not configured";
+  const ready =
+    task.id === "integration_cursor" || task.id === "integration_cursor_wsl"
+      ? "Idle · waiting for a Cursor Agent session"
+      : task.id === "integration_claude"
+        ? "Idle · waiting for a VS Code Agent session"
+        : "Connected · loading…";
+  const label = error ?? (configured ? ready : missing);
   const statusColor = error || !configured ? "#F4505E" : "#22C55E";
 
   const actions = h("div", { class: "int-actions" });
@@ -92,6 +101,15 @@ function idleCard(task: AgentTask, openSettings: () => void): HTMLElement {
         style: `color:${task.color}b3`,
         text: "Open Visual Studio Code",
         onclick: () => void Bridge.openInVSCode(task.sessionCwd ?? null),
+      }),
+    );
+  } else if (task.id === "integration_cursor" || task.id === "integration_cursor_wsl") {
+    actions.append(
+      h("button", {
+        class: "link-btn",
+        style: `color:${task.color}b3`,
+        text: "Open Cursor",
+        onclick: () => void Bridge.openInCursor(task.sessionCwd ?? null),
       }),
     );
   } else if (task.id === "integration_n8n") {
@@ -113,7 +131,7 @@ function idleCard(task: AgentTask, openSettings: () => void): HTMLElement {
       }),
     );
   }
-  if (configured) {
+  if (configured && !isHookAgent) {
     actions.append(
       h("button", {
         class: "link-btn",
@@ -122,7 +140,7 @@ function idleCard(task: AgentTask, openSettings: () => void): HTMLElement {
         onclick: () => void Bridge.refreshIntegration(task.id),
       }),
     );
-  } else {
+  } else if (!configured) {
     actions.append(
       h("button", { class: "link-btn", style: "color:#8e939c", text: "Settings…", onclick: openSettings }),
     );

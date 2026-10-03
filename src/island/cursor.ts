@@ -76,6 +76,28 @@ export function calculateHomeCollapseTime(
   return nowMs + autoCloseInterval * 1000;
 }
 
+export type PinCollapseFsmState = "hidden" | "petit" | "home" | "coucou";
+
+/** After a pin change: whether to re-arm home→petit collapse (mouse already outside). */
+export function planHomeCollapseAfterPinChange(options: {
+  pinned: boolean;
+  fsmState: PinCollapseFsmState;
+  mouseInIsland: boolean;
+  autoCloseInterval: number;
+  nowMs: number;
+}): { armCollapse: boolean; homeCollapseAt: number | null } {
+  if (options.pinned) {
+    return { armCollapse: false, homeCollapseAt: null };
+  }
+  if (options.fsmState === "home" && !options.mouseInIsland) {
+    return {
+      armCollapse: true,
+      homeCollapseAt: calculateHomeCollapseTime(options.autoCloseInterval, options.nowMs),
+    };
+  }
+  return { armCollapse: false, homeCollapseAt: null };
+}
+
 /** Handles wake-strip mouse enter: resumes audio and triggers wake if hidden. */
 export function handleWakeStripEnter(
   mode: IslandMode,

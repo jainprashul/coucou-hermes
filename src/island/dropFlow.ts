@@ -26,6 +26,7 @@ export const FILE_ERROR_TIMEOUT_MS = 2400;
 
 export interface PinnableFsm {
   pinned: boolean;
+  setPinned?(pinned: boolean): void;
 }
 
 export interface ReveallableFsm {
@@ -159,7 +160,8 @@ export function syncUploadDom(
 
 /** Sync FSM pin when an alert surfaces while already expanded (setView path). */
 export function pinForAlert(fsm: PinnableFsm): void {
-  fsm.pinned = true;
+  if (fsm.setPinned) fsm.setPinned(true);
+  else fsm.pinned = true;
 }
 
 /** Reveal island from hidden / compact state. */
@@ -169,7 +171,8 @@ export function revealIsland(fsm: ReveallableFsm): void {
 
 /** An alert stopped waiting for an answer: let the island auto-close again. */
 export function dropPin(fsm: PinnableFsm): void {
-  fsm.pinned = false;
+  if (fsm.setPinned) fsm.setPinned(false);
+  else fsm.pinned = false;
 }
 
 /** Alert from the hook server: open on this view. Pinned alerts never auto-close. */
@@ -178,7 +181,8 @@ export function triggerAlert(
   host: AlertHost,
   isPinned: boolean = State.isPinned,
 ): void {
-  host.fsm.pinned = isPinned;
+  if (host.fsm.setPinned) host.fsm.setPinned(isPinned);
+  else host.fsm.pinned = isPinned;
   host.fsm.forceHome();
   host.expand(view);
 }

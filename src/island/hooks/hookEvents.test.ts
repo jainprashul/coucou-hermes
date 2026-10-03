@@ -165,7 +165,27 @@ describe("hookEvents", () => {
       handleHookEvent(host, { hook_event_name: "SessionStart", cwd: "/home/dev/myapp" }, getOptions());
       const task = State.tasks.find((t) => t.id === CLAUDE_ID)!;
       expect(task.name).toBe("myapp");
+      expect(task.state).toBe("thinking");
       expect(mockSound.play).toHaveBeenCalledWith("work");
+    });
+
+    it("accepts Cursor camelCase events and focuses the Cursor pill", () => {
+      State.focusId = HERMES_ID;
+      handleHookEvent(
+        host,
+        {
+          hook_event_name: "preToolUse",
+          coucou_agent: "cursor",
+          tool_name: "Shell",
+          tool_input: { command: "npm test" },
+          cwd: "D:/X/daily/coucou-hermes",
+        },
+        getOptions(),
+      );
+      expect(State.focusId).toBe(CURSOR_ID);
+      const task = State.tasks.find((t) => t.id === CURSOR_ID)!;
+      expect(task.state).toBe("working");
+      expect(task.steps.some((s) => s.includes("npm test"))).toBe(true);
     });
 
     it("handles UserPromptSubmit using prompt field", () => {

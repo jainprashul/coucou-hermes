@@ -4,6 +4,7 @@ import type { BotStateName, IslandMode, IslandViewName } from "./layout";
 import {
   INTEGRATION_AGENTS,
   TOGGLEABLE_INTEGRATION_IDS,
+  isHookAgentId,
 } from "./integrations";
 import {
   DEFAULT_SETTINGS,
@@ -168,10 +169,22 @@ class AppState {
     this.notify();
   }
 
+  /** Hermes is always on; hook agents appear when configured; others follow activeIntegrations. */
+  private shouldLoadIntegration(id: string): boolean {
+    if (id === "integration_hermes") return true;
+    if (this.settings.activeIntegrations.includes(id)) return true;
+    if (id === "integration_claude") {
+      return this.settings.hooksInstalled || !!this.integrations[id]?.configured;
+    }
+    if (id === "integration_cursor" || id === "integration_cursor_wsl") {
+      return !!this.integrations[id]?.configured;
+    }
+    return false;
+  }
+
   loadIntegrationTasks() {
     for (const proto of INTEGRATION_AGENTS) {
-      const shouldLoad =
-        proto.id === "integration_hermes" || this.settings.activeIntegrations.includes(proto.id);
+      const shouldLoad = this.shouldLoadIntegration(proto.id);
       const idx = this._tasks.findIndex((t) => t.id === proto.id);
       if (shouldLoad && idx < 0) this._tasks.push({ ...proto, steps: [] });
       if (!shouldLoad && idx >= 0) this._tasks.splice(idx, 1);
@@ -213,6 +226,25 @@ class AppState {
     });
     this.invalidateTaskIndex();
     if (!this.focusId) this.focusId = id;
+    this.notify();
+  }
+
+  /**
+   * Ensures a built-in hook agent pill exists when a session starts, even if
+   * refreshConfigured hasn't run yet (e.g. hooks just installed).
+   */
+  ensureBuiltinAgent(id: string) {
+    if (!isHookAgentId(id) && id !== "integration_hermes") return;
+    if (this.findTask(id)) return;
+    const proto = INTEGRATION_AGENTS.find((t) => t.id === id);
+    if (!proto) return;
+    const info = this.integrations[id] ?? {
+      data: {}, error: null, loaded: false, configured: false,
+    };
+    this.integrations[id] = { ...info, configured: true };
+    if (id === "integration_claude") this.settings.hooksInstalled = true;
+    this._tasks.push({ ...proto, steps: [] });
+    this.invalidateTaskIndex();
     this.notify();
   }
 

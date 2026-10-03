@@ -13,6 +13,7 @@ import {
   approvalTarget,
   clearSession,
   ensureAgentPill,
+  prepareHookPayload,
   resolveHookAgentRoute,
   stepLabel,
   upsertSession,
@@ -104,11 +105,18 @@ export function handleHookEvent(
     return;
   }
 
-  const name = payload.hook_event_name ?? "";
+  const prepared = prepareHookPayload(payload);
+  const name = prepared.name;
+  payload = prepared.payload;
   const route = resolveHookAgentRoute(payload);
   const { agentId, isExternalAgent, projectName, cwd } = route;
 
-  const focused = state.focusId === agentId;
+  /** Bring this agent's ticker to the front when it starts doing work. */
+  const focusAgent = () => {
+    if (state.focusId !== agentId) state.setFocus(agentId);
+  };
+
+  const focused = () => state.focusId === agentId;
 
   /** Alerts force the island open; work events only reveal the compact island. */
   const surface = (view: IslandViewName, isAlert: boolean) => {
@@ -123,12 +131,15 @@ export function handleHookEvent(
   switch (name) {
     case "SessionStart":
       ensurePill();
+      focusAgent();
+      state.updateTask(agentId, "thinking");
       surface("overview", false);
       sound.play("work");
       break;
 
     case "UserPromptSubmit": {
       ensurePill();
+      focusAgent();
       state.updateTask(agentId, "thinking");
       // The field is `prompt`; reading `message` meant this step was always blank.
       const asked = payload.prompt ?? payload.message;
@@ -139,6 +150,7 @@ export function handleHookEvent(
 
     case "PreToolUse": {
       ensurePill();
+      focusAgent();
       state.updateTask(agentId, "working");
       const tool = payload.tool_name ?? "Tool";
       state.appendStep(agentId, stepLabel(tool, payload.tool_input ?? {}));
@@ -172,7 +184,7 @@ export function handleHookEvent(
       state.updateTask(agentId, "finished");
       if (payload.message) state.appendStep(agentId, payload.message.slice(0, 60));
       sound.play("finish");
-      if (focused) surface("finished", true);
+      if (focused()) surface("finished", true);
       else state.setPillBadge(agentId, "finished");
       timer(() => {
         if (isExternalAgent) {
@@ -188,7 +200,7 @@ export function handleHookEvent(
     case "StopFailure":
       state.updateTask(agentId, "error");
       sound.play("error");
-      if (focused) surface("error", true);
+      if (focused()) surface("error", true);
       else state.setPillBadge(agentId, "error");
       break;
 
@@ -245,7 +257,7 @@ export function handleHookEvent(
       state.updateTask(agentId, "approval");
       state.isPinned = true;
       sound.play("approval");
-      if (focused) {
+      if (focused()) {
         island.alert("approval");
       } else {
         // Another agent holds the view, so the card would yank it away. The badge

@@ -16,6 +16,8 @@ import {
   upsertSession,
   clearSession,
   ensureAgentPill,
+  normalizeHookEventName,
+  prepareHookPayload,
 } from "./agentRouting";
 
 describe("agentRouting", () => {
@@ -159,6 +161,34 @@ describe("agentRouting", () => {
     });
   });
 
+  describe("normalizeHookEventName / prepareHookPayload", () => {
+    it("maps Cursor camelCase lifecycle names to Claude PascalCase", () => {
+      expect(normalizeHookEventName("sessionStart")).toBe("SessionStart");
+      expect(normalizeHookEventName("beforeSubmitPrompt")).toBe("UserPromptSubmit");
+      expect(normalizeHookEventName("preToolUse")).toBe("PreToolUse");
+      expect(normalizeHookEventName("beforeShellExecution")).toBe("PreToolUse");
+      expect(normalizeHookEventName("PreToolUse")).toBe("PreToolUse");
+    });
+
+    it("promotes Cursor prompt_text and shell command into Claude-shaped fields", () => {
+      const prompt = prepareHookPayload({
+        hook_event_name: "beforeSubmitPrompt",
+        prompt_text: "ship it",
+      });
+      expect(prompt.name).toBe("UserPromptSubmit");
+      expect(prompt.payload.prompt).toBe("ship it");
+
+      const shell = prepareHookPayload({
+        hook_event_name: "beforeShellExecution",
+        command: "npm test",
+        cwd: "D:/repo",
+      });
+      expect(shell.name).toBe("PreToolUse");
+      expect(shell.payload.tool_name).toBe("Shell");
+      expect(shell.payload.tool_input).toEqual({ command: "npm test", path: "D:/repo" });
+    });
+  });
+
   describe("resolveHookAgentRoute", () => {
     it("routes unassigned or empty coucou_agent to CLAUDE_ID", () => {
       const route = resolveHookAgentRoute({ cwd: "/home/dev/my-project" });
@@ -261,6 +291,22 @@ describe("agentRouting", () => {
       ensureAgentPill(route, State);
       const task = State.tasks.find((t) => t.id === CLAUDE_ID)!;
       expect(task.name).toBe("awesome-app");
+    });
+
+    it("creates a missing Cursor pill when a Cursor hook session starts", () => {
+      State.tasks = State.tasks.filter((t) => t.id !== CURSOR_ID);
+      expect(State.tasks.find((t) => t.id === CURSOR_ID)).toBeUndefined();
+
+      const route = resolveHookAgentRoute({
+        coucou_agent: "cursor",
+        cwd: "D:/X/daily/coucou-hermes",
+      });
+      ensureAgentPill(route, State);
+
+      const task = State.tasks.find((t) => t.id === CURSOR_ID)!;
+      expect(task).toBeDefined();
+      expect(task.name).toBe("coucou-hermes");
+      expect(State.integrations[CURSOR_ID]?.configured).toBe(true);
     });
   });
 });

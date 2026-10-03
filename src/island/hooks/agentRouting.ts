@@ -20,10 +20,64 @@ export interface HookPayload {
   message?: string;
   /** UserPromptSubmit carries `prompt`; `message` belongs to Notification/Stop. */
   prompt?: string;
+  /** Cursor beforeSubmitPrompt sometimes uses prompt_text. */
+  prompt_text?: string;
   tool_name?: string;
   tool_input?: Record<string, unknown>;
+  /** Cursor beforeShellExecution puts the command at the top level. */
+  command?: string;
   /** Optional agent tag: lowercase, digits and hyphens, ≤ 24 chars. */
   coucou_agent?: string;
+}
+
+/**
+ * Cursor's camelCase hook names → Claude PascalCase the island switch handles.
+ * Needed when an older coucou-hook.exe forwards events without normalizing.
+ */
+export const CURSOR_HOOK_EVENT_ALIASES: Record<string, string> = {
+  sessionStart: "SessionStart",
+  sessionEnd: "SessionEnd",
+  beforeSubmitPrompt: "UserPromptSubmit",
+  preToolUse: "PreToolUse",
+  postToolUse: "PostToolUse",
+  postToolUseFailure: "PostToolUseFailure",
+  stop: "Stop",
+  subagentStart: "SubagentStart",
+  subagentStop: "SubagentStop",
+  // Fire-and-forget on a stale relay — show as tool activity, not a stuck approval.
+  afterShellExecution: "PostToolUse",
+  beforeShellExecution: "PreToolUse",
+  beforeMCPExecution: "PreToolUse",
+};
+
+export function normalizeHookEventName(raw: string): string {
+  return CURSOR_HOOK_EVENT_ALIASES[raw] ?? raw;
+}
+
+/** Fill Claude-shaped fields from Cursor's flatter payload shapes. */
+export function prepareHookPayload(payload: HookPayload): {
+  name: string;
+  payload: HookPayload;
+} {
+  const raw = payload.hook_event_name ?? "";
+  const name = normalizeHookEventName(raw);
+  const next: HookPayload = { ...payload, hook_event_name: name };
+
+  if (!next.prompt && next.prompt_text) next.prompt = next.prompt_text;
+
+  if (raw === "beforeShellExecution") {
+    next.tool_name = next.tool_name ?? "Shell";
+    if (!next.tool_input) {
+      const input: Record<string, unknown> = {};
+      if (next.command) input.command = next.command;
+      if (next.cwd) input.path = next.cwd;
+      next.tool_input = input;
+    }
+  } else if (raw === "beforeMCPExecution") {
+    next.tool_name = next.tool_name ?? "MCP";
+  }
+
+  return { name, payload: next };
 }
 
 export interface HookAgentRoute {
@@ -203,11 +257,12 @@ export function clearSession(agentId: string = CLAUDE_ID, state = State): void {
   t.pillBadge = null;
 }
 
-/** Ensure the agent pill exists (no-op for Claude / Hermes / Cursor built-ins). */
+/** Ensure the agent pill exists — creates built-ins if hooks fired before the pill was loaded. */
 export function ensureAgentPill(route: HookAgentRoute, state = State): void {
   if (route.isExternalAgent) {
     state.upsertExternalAgent(route.agentId, route.validAgent!, agentColor(route.validAgent!));
   } else {
+    state.ensureBuiltinAgent(route.agentId);
     upsertSession(route.projectName, route.cwd, route.agentId, state);
   }
 }
