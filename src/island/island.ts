@@ -5,25 +5,42 @@ import { Spring } from "../core/anim";
 import { Bridge, IS_TAURI, onDragDrop } from "../core/bridge";
 import {
   EXPANDED_W, PANEL_H, PANEL_W,
-  VIEW_LAYOUTS, botGlowColor, botGlowOpacity, botPosition, chatPromptHeight,
+  VIEW_LAYOUTS, botPosition, chatPromptHeight,
   type IslandMode, type IslandViewName,
 } from "../core/layout";
 import { Sound } from "../core/sound";
 import { State } from "../core/state";
-import { BotEngine, hexToRGB } from "../mochi/engine";
+import { BotEngine } from "../mochi/engine";
 import { Greeting } from "../mochi/greeting";
 import { tickMiniBots } from "../mochi/minibots";
 import { UploadCanvas } from "../upload/canvas";
 import { USC, UploadSeq } from "../upload/sequence";
 import { buildHeader, buildViews, type ViewActions, type ViewHost } from "../views/views";
 import { h } from "../views/dom";
+import {
+  BOT_OVERHANG,
+  BotHoverController,
+  ConfusedRecoveryManager,
+  applyBotCanvasLayout,
+  applyBotGlow,
+  calculateLookX,
+  calculateLookY,
+  computeBotBodyColor,
+  computeBotCanvasLayout,
+  computeBotGlow,
+  isBotCanvasVisible,
+  updateEngineSlotHeight,
+} from "./botFx";
+import {
+  CursorTracker,
+  WindowCollapseManager,
+  calculateHomeCollapseTime,
+  handleWakeStripEnter,
+  isPointInBot,
+} from "./cursor";
 import { IslandStateMachine } from "./fsm";
 import { IslandGeometry, type IslandRect } from "./geometry";
 import { syncIslandDom, syncViewFocus, updateCountdown } from "./sync";
-
-const BOT_OVERHANG = 40;
-/** Same margin as the Rust hit test (src-tauri/src/island.rs). */
-const HIT_MARGIN = 14;
 
 /** The three views the drop sequence owns; leaving them stops the engine. */
 const UPLOAD_VIEWS: ReadonlySet<IslandViewName> = new Set(["upload", "uploading", "choose"]);
@@ -66,20 +83,21 @@ export class Island {
   private canvasPx = 0;
 
   // Rust starts the window at full size so the launch greeting has room.
-  private collapsed = false;
-  private collapseTimer: number | null = null;
-  private wasInIsland = false;
+  private cursorTracker = new CursorTracker();
+  private windowCollapse = new WindowCollapseManager();
   private homeCollapseAt: number | null = null;
 
   // Bot hover → love (IslandWindowController.botHoverIn)
-  private botHovering = false;
-  private botHoverTimer: number | null = null;
-  private lastLoveTime = 0;
-  private botHoverStart = { x: 0, y: 0 };
-
-  private confusedRecovery: number | null = null;
-  private prevViewBeforeConfused: IslandViewName = "overview";
+  private botHover!: BotHoverController;
+  private confusedRecovery = new ConfusedRecoveryManager();
   private lastSyncedView: IslandViewName | null = null;
+
+  private get wasInIsland(): boolean {
+    return this.cursorTracker.wasInIsland;
+  }
+  private set wasInIsland(val: boolean) {
+    this.cursorTracker.wasInIsland = val;
+  }
 
   /** Drop sequence bookkeeping: last tick played, and whether the ✓ has fired. */
   private uploadTens = 0;
@@ -87,6 +105,15 @@ export class Island {
 
   constructor(root: HTMLElement) {
     this.root = root;
+    this.botHover = new BotHoverController({
+      blink: () => this.engine.blink(),
+      triggerEmote: (emote) => this.engine.triggerEmote(emote),
+      setEyeScale: (scale) => {
+        this.engine.tgEs = scale;
+      },
+      playSound: (s) => Sound.play(s),
+      isOverrideActive: () => State.stateOverride != null,
+    });
     this.build();
     this.wireFsm();
     this.wireInput();
@@ -485,24 +512,7 @@ export class Island {
   // ── Window collapse (hidden → tiny wake strip, zero polling) ────────────────
 
   private updateWindowCollapsed() {
-    if (this.collapseTimer != null) {
-      window.clearTimeout(this.collapseTimer);
-      this.collapseTimer = null;
-    }
-    if (State.mode === "hidden") {
-      // Let the island finish retracting, then drop the window to the wake strip:
-      // from there the OS delivers no cursor events, so nothing polls at all.
-      this.collapseTimer = window.setTimeout(() => {
-        this.collapseTimer = null;
-        if (State.mode !== "hidden") return;
-        this.collapsed = true;
-        void Bridge.setCollapsed(true);
-      }, 420);
-    } else if (this.collapsed) {
-      // Grow the window back before the island animates open.
-      this.collapsed = false;
-      void Bridge.setCollapsed(false);
-    }
+    this.windowCollapse.update(State.mode, () => State.mode);
   }
 
   // ── Input ───────────────────────────────────────────────────────────────────
@@ -510,8 +520,7 @@ export class Island {
   private wireInput() {
     // The wake strip is the only thing the OS can hit while the island is hidden.
     this.wakeStrip.addEventListener("mouseenter", () => {
-      Sound.resume();
-      if (State.mode === "hidden") this.fsm.mouseEntered();
+      handleWakeStripEnter(State.mode, () => this.fsm.mouseEntered());
     });
 
     this.islandEl.addEventListener("mousedown", (e) => {
@@ -545,100 +554,60 @@ export class Island {
   onCursor(x: number, y: number) {
     State.mouse = { x, y };
     const rect = this.islandRect();
-    State.mouseInIsland = { x: x - rect.x, y: y - rect.y };
+    const { entered, left, mouseInIsland } = this.cursorTracker.update(x, y, rect);
+    State.mouseInIsland = mouseInIsland;
 
     // Windows sends no cursor position with an OLE drag, so the drop sequence is
     // fed from the Win32 cursor poll instead — it runs throughout the drag.
     if (UploadSeq.isActive && !UploadSeq.dropped) {
-      UploadSeq.updateCursor(State.mouseInIsland.x, State.mouseInIsland.y);
+      UploadSeq.updateCursor(mouseInIsland.x, mouseInIsland.y);
     }
 
-    const inIsland =
-      x >= rect.x - HIT_MARGIN && x <= rect.x + rect.w + HIT_MARGIN &&
-      y >= rect.y - HIT_MARGIN && y <= rect.y + rect.h + HIT_MARGIN;
-
-    if (inIsland && !this.wasInIsland) {
+    if (entered) {
       if (this.fsm.state === "coucou") this.greeting.hover();
       this.fsm.mouseEntered();
       this.homeCollapseAt = null;
     }
-    if (!inIsland && this.wasInIsland) {
+    if (left) {
       this.fsm.mouseLeft();
       if (this.fsm.state === "home" && !State.isPinned) {
-        this.homeCollapseAt = performance.now() + State.settings.autoCloseInterval * 1000;
+        this.homeCollapseAt = calculateHomeCollapseTime(
+          State.settings.autoCloseInterval,
+          performance.now(),
+        );
       }
     }
-    this.wasInIsland = inIsland;
 
     // Bot hover → love
     const overBot = State.mode === "expanded" && State.stateOverride == null && this.isBotHit(x, y);
-    if (overBot && !this.botHovering) this.botHoverIn(x, y);
-    if (!overBot && this.botHovering) this.cancelBotHover();
-    this.botHovering = overBot;
-    if (this.botHovering) {
-      const d = Math.hypot(x - this.botHoverStart.x, y - this.botHoverStart.y);
-      if (d > 40) {
-        this.botHoverStart = { x, y };
-        this.scheduleLove();
-      }
-    }
+    this.botHover.update(overBot, x, y);
 
     this.ensureRunning();
   }
 
   private isBotHit(x: number, y: number): boolean {
     const rect = this.islandRect();
-    const cx = rect.x + this.botCx.value;
-    const cy = rect.y + this.botCy.value;
-    const radius = this.botSize.value / 2;
-    return (x - cx) ** 2 + (y - cy) ** 2 <= radius * radius;
-  }
-
-  private botHoverIn(x: number, y: number) {
-    if (performance.now() / 1000 - this.lastLoveTime < 6) return;
-    this.botHoverStart = { x, y };
-    this.engine.blink();
-    this.engine.tgEs = 1.08;
-    Sound.play("hover");
-    this.scheduleLove();
-  }
-
-  private scheduleLove() {
-    if (this.botHoverTimer != null) window.clearTimeout(this.botHoverTimer);
-    this.botHoverTimer = window.setTimeout(() => {
-      this.botHoverTimer = null;
-      if (!this.botHovering || State.stateOverride != null) return;
-      if (performance.now() / 1000 - this.lastLoveTime < 6) return;
-      this.lastLoveTime = performance.now() / 1000;
-      this.engine.triggerEmote("love");
-      Sound.play("love");
-    }, 1900);
+    return isPointInBot(x, y, rect, this.botCx.value, this.botCy.value, this.botSize.value);
   }
 
   private cancelBotHover() {
-    if (this.botHoverTimer != null) window.clearTimeout(this.botHoverTimer);
-    this.botHoverTimer = null;
-    this.engine.tgEs = 1;
+    this.botHover.cancel();
   }
 
   /** Three slaps → dizzy + confused view for 3.3 s, then back. */
   private handleDizzy() {
-    this.prevViewBeforeConfused = State.view;
     State.stateOverride = "dizzy";
     this.engine.setState("dizzy");
     Sound.play("dizzy");
     this.alert("confused");
-    if (this.confusedRecovery != null) window.clearTimeout(this.confusedRecovery);
-    this.confusedRecovery = window.setTimeout(() => {
-      this.confusedRecovery = null;
+    this.confusedRecovery.start(State.view, (targetView) => {
       State.stateOverride = null;
       this.engine.setState(State.effectiveState);
       if (State.view === "confused") {
-        const fallback = State.defaultView();
-        this.setView(this.prevViewBeforeConfused === "confused" ? fallback : this.prevViewBeforeConfused);
+        this.setView(targetView);
       }
       this.engine.triggerEmote("happy");
-    }, 3300);
+    });
   }
 
   // ── Frame loop ──────────────────────────────────────────────────────────────
@@ -720,71 +689,56 @@ export class Island {
 
     const greetingActive = State.mode === "expanded" && State.view === "greeting";
     // The drop canvas draws its own Mochi; two of them would overlap.
-    const visible = p.opacity > 0 && !greetingActive && !this.uploadActive;
+    const visible = isBotCanvasVisible(p.opacity, greetingActive, this.uploadActive);
     this.botCanvas.style.opacity = visible ? "1" : "0";
 
-    if (State.mode === "expanded" && State.view !== "uploading" && !greetingActive && !this.uploadActive) {
-      const d = p.diameter;
-      const color = botGlowColor(State.effectiveState);
-      this.botGlow.style.display = "block";
-      this.botGlow.style.width = `${d * 2.2}px`;
-      this.botGlow.style.height = `${d * 2.2}px`;
-      this.botGlow.style.left = `${this.botCx.value - d * 1.1}px`;
-      this.botGlow.style.top = `${this.botCy.value - d * 1.1}px`;
-      this.botGlow.style.background = `radial-gradient(circle, ${color} 0%, transparent 62%)`;
-      this.botGlow.style.opacity = String(botGlowOpacity(State.effectiveState));
-    } else {
-      this.botGlow.style.display = "none";
-    }
+    const glow = computeBotGlow(
+      State.mode,
+      State.view,
+      State.effectiveState,
+      p.diameter,
+      this.botCx.value,
+      this.botCy.value,
+      greetingActive,
+      this.uploadActive,
+    );
+    applyBotGlow(this.botGlow, glow);
   }
 
   private drawBot(dt: number) {
-    const size = this.botSize.value;
-    const w = Math.max(1, Math.round(size));
-    const hCss = w + BOT_OVERHANG;
     const dpr = Math.min(2, window.devicePixelRatio || 1);
-    if (this.canvasPx !== w) {
-      this.canvasPx = w;
-      this.botCanvas.width = Math.round(w * dpr);
-      this.botCanvas.height = Math.round(hCss * dpr);
-      this.botCanvas.style.width = `${w}px`;
-      this.botCanvas.style.height = `${hCss}px`;
-    }
-    this.botCanvas.style.left = `${this.botCx.value - w / 2}px`;
-    this.botCanvas.style.top = `${this.botCy.value - BOT_OVERHANG / 2 - hCss / 2}px`;
+    const layout = computeBotCanvasLayout(
+      this.botSize.value,
+      this.botCx.value,
+      this.botCy.value,
+      dpr,
+      BOT_OVERHANG,
+    );
+    this.canvasPx = applyBotCanvasLayout(this.botCanvas, layout, this.canvasPx);
 
     const ctx = this.botCanvas.getContext("2d");
     if (!ctx) return;
 
-    const focus = State.focusTask;
-    this.engine.bodyColor = focus?.isIntegration ? hexToRGB(focus.color) : null;
+    this.engine.bodyColor = computeBotBodyColor(State.focusTask);
     this.engine.particleOverhang = BOT_OVERHANG;
     this.engine.lookX = this.lookX();
     this.engine.lookY = this.lookY();
-    if (this.engine.morph > 0.3) {
-      this.engine.slotHTarget = State.fileDragOver ? 0.2 : 0;
-    } else {
-      this.engine.slotHTarget = 0;
-      if (this.engine.morph < 0.05) {
-        this.engine.slotH = 0;
-        this.engine.slotHVel = 0;
-      }
-    }
+    updateEngineSlotHeight(this.engine, State.fileDragOver);
     this.engine.update(dt);
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    ctx.clearRect(0, 0, w, hCss);
-    this.engine.draw(ctx, w, hCss);
+    ctx.clearRect(0, 0, layout.w, layout.hCss);
+    this.engine.draw(ctx, layout.w, layout.hCss);
   }
 
   /** BotCanvasView.lookX / lookY — tanh of the distance to the bot. */
   private lookX(): number {
     const rect = this.islandRect();
     const botScreenX = rect.x + this.botCx.value;
-    return Math.tanh((State.mouse.x - botScreenX) / 260);
+    return calculateLookX(State.mouse.x, botScreenX);
   }
 
   private lookY(): number {
-    return -Math.tanh((State.mouse.y - this.botCy.value) / 200);
+    return calculateLookY(State.mouse.y, this.botCy.value);
   }
 
   private updateCountdown(nowMs: number) {
