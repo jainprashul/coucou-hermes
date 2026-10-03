@@ -4,7 +4,7 @@
 import type { BotEmoteName, BotStateName } from "./layout";
 import type { EyeShape } from "../mochi/engine";
 
-export type AgentSource = "hermes" | "claudeCode" | "n8n" | "agent";
+export type AgentSource = "hermes" | "claudeCode" | "cursor" | "n8n" | "agent";
 export type PillBadge = "approval" | "finished" | "error" | "question";
 
 export interface AgentTask {

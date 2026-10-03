@@ -10,7 +10,6 @@ import { State } from "../../core/state";
 import type { IslandViewName } from "../../core/layout";
 import type { Island } from "../island";
 import {
-  CLAUDE_ID,
   approvalTarget,
   clearSession,
   ensureAgentPill,
@@ -107,7 +106,7 @@ export function handleHookEvent(
 
   const name = payload.hook_event_name ?? "";
   const route = resolveHookAgentRoute(payload);
-  const { agentId, isHermes, isExternalAgent, projectName, cwd } = route;
+  const { agentId, isExternalAgent, projectName, cwd } = route;
 
   const focused = state.focusId === agentId;
 
@@ -211,10 +210,10 @@ export function handleHookEvent(
       break;
 
     case "PermissionRequest": {
-      // External agents and Hermes: no pipe approval card.
-      // Hermes approvals use gateway `server_request` → hermes-approval (interactive).
-      // Declining here lets the terminal / gateway path take over.
-      if (isExternalAgent || isHermes) {
+      // Only Claude / Cursor / WSL Cursor own named-pipe approval cards.
+      // Hermes approvals use gateway `server_request` → hermes-approval.
+      // Declining here lets the host / gateway path take over.
+      if (!route.acceptsPipeApproval) {
         if (payload.request_id) void bridge.approvalDecline(payload.request_id);
         break;
       }
@@ -222,12 +221,12 @@ export function handleHookEvent(
       const requestId = payload.request_id ?? "";
       // One card, one request. A second one must never quietly replace the first
       // — that would leave a human staring at request B while request A waits for
-      // a decision nobody can give. Hand it straight back to the terminal.
+      // a decision nobody can give. Hand it straight back to the host.
       if (state.pendingApproval && state.pendingApproval.requestId !== requestId) {
         if (requestId) void bridge.approvalDecline(requestId);
         break;
       }
-      upsertSession(projectName, cwd, CLAUDE_ID, state);
+      upsertSession(projectName, cwd, agentId, state);
       if (pendingTimeout != null) {
         clearTimer(pendingTimeout);
         pendingTimeout = null;
@@ -243,7 +242,7 @@ export function handleHookEvent(
       // The relay's short ack window closes in 800 ms; everything below this
       // line is synchronous, so the card really is up by the time it lands.
       if (requestId) void bridge.approvalAck(requestId);
-      state.updateTask(CLAUDE_ID, "approval");
+      state.updateTask(agentId, "approval");
       state.isPinned = true;
       sound.play("approval");
       if (focused) {
@@ -252,10 +251,10 @@ export function handleHookEvent(
         // Another agent holds the view, so the card would yank it away. The badge
         // is the signal instead — but it has to be on screen for that to mean
         // anything, hence the reveal. We just told the relay a human can act.
-        state.setPillBadge(CLAUDE_ID, "approval");
+        state.setPillBadge(agentId, "approval");
         island.reveal();
       }
-      // Coucou answers within 108 s or not at all; after that the terminal has
+      // Coucou answers within 108 s or not at all; after that the host has
       // taken over and the card would be lying.
       pendingTimeout = timer(() => {
         pendingTimeout = null;
@@ -263,8 +262,8 @@ export function handleHookEvent(
         state.pendingApproval = null;
         state.isPinned = false;
         island.dropPin?.();
-        state.updateTask(CLAUDE_ID, "working");
-        state.setPillBadge(CLAUDE_ID, null);
+        state.updateTask(agentId, "working");
+        state.setPillBadge(agentId, null);
         if (state.view === "approval") island.setView(state.defaultView());
         state.notify();
       }, 110_000);

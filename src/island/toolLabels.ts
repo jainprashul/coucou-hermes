@@ -18,6 +18,9 @@ export const TOOL_LABELS: Record<string, string> = {
   MultiEdit: "Edit",
   NotebookEdit: "Notebook",
   PowerShell: "Execute",
+  // Cursor Agent tool names
+  Shell: "Execute",
+  Delete: "Delete",
   // Hermes tool names (outbound webhooks / remote agent)
   terminal: "Execute",
   execute_code: "code",
@@ -36,5 +39,8 @@ export const TOOL_LABELS: Record<string, string> = {
 };
 
 export function toolLabel(toolName: string): string {
-  return TOOL_LABELS[toolName] ?? toolName;
+  if (TOOL_LABELS[toolName]) return TOOL_LABELS[toolName];
+  // Cursor MCP tools arrive as `MCP:<server>` after relay normalization.
+  if (toolName.startsWith("MCP:")) return `MCP · ${toolName.slice(4)}`;
+  return toolName;
 }

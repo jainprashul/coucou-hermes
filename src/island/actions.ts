@@ -34,11 +34,13 @@ export function resolveTargetUrl(taskId: string): string | undefined {
 /** The ↗ button — same targets as openAgentTarget() on macOS. */
 export function openTaskTarget(
   task: AgentTask | null,
-  bridge: Pick<typeof Bridge, "openInVSCode" | "openN8n" | "openUrl"> = Bridge,
+  bridge: Pick<typeof Bridge, "openInVSCode" | "openInCursor" | "openN8n" | "openUrl"> = Bridge,
 ): void {
   if (!task) return;
   if (task.id === "integration_claude") {
     void bridge.openInVSCode(task.sessionCwd ?? null);
+  } else if (task.id === "integration_cursor" || task.id === "integration_cursor_wsl") {
+    void bridge.openInCursor(task.sessionCwd ?? null);
   } else if (task.id === "integration_n8n") {
     void bridge.openN8n();
   } else {

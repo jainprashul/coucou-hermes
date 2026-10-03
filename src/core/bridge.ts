@@ -63,6 +63,7 @@ export const Bridge = {
   reposition: () => call<void>("reposition"),
   openUrl: (url: string) => call<void>("open_url", { url }),
   openInVSCode: (path: string | null) => call<boolean>("open_in_vscode", { path }),
+  openInCursor: (path: string | null) => call<boolean>("open_in_cursor", { path }),
   quit: () => call<void>("quit_app"),
   openSettingsWindow: () => call<void>("open_settings_window"),
   log: (message: string) => call<void>("log_line", { message }),
@@ -86,6 +87,14 @@ export const Bridge = {
   hooksPreview: (install: boolean) => callOrThrow<HookPreview>("hooks_preview", { install }),
   hooksApply: (install: boolean, fingerprint: string) =>
     callOrThrow<string>("hooks_apply", { install, fingerprint }),
+
+  // ── Cursor hooks (Windows + Remote-WSL) ───────────────────────────────────
+  cursorHooksStatus: () => call<CursorHookStatus>("cursor_hooks_status"),
+  cursorHooksPreview: (target: "windows" | "wsl", install: boolean) =>
+    callOrThrow<CursorHookPreview>("cursor_hooks_preview", { target, install }),
+  cursorHooksApply: (target: "windows" | "wsl", install: boolean, fingerprint: string) =>
+    callOrThrow<string>("cursor_hooks_apply", { target, install, fingerprint }),
+
   approvalDecision: (requestId: string, decision: "allow" | "deny") =>
     call<void>("approval_decision", { requestId, decision }),
   approvalAck: (requestId: string) => call<void>("approval_ack", { requestId }),
@@ -135,6 +144,28 @@ export interface HookPreview {
   backup: string;
   settingsPath: string;
   fingerprint: string;
+}
+
+export interface CursorTargetStatus {
+  available: boolean;
+  installed: boolean;
+  settingsPath: string;
+  detail: string | null;
+}
+
+export interface CursorHookStatus {
+  windows: CursorTargetStatus;
+  wsl: CursorTargetStatus;
+  hookPath: string;
+  hookReady: boolean;
+}
+
+export interface CursorHookPreview {
+  diff: string;
+  backup: string;
+  settingsPath: string;
+  fingerprint: string;
+  target: "windows" | "wsl";
 }
 
 export interface DragDropPayload {

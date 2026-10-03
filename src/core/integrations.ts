@@ -17,6 +17,8 @@ export const INTEGRATION_AGENTS: AgentTask[] = [
   task("integration_github", "GitHub", "#F4505E", "n8n"),
   task("integration_vercel", "Vercel", "#7C5CFF", "n8n"),
   task("integration_claude", "VS Code", "#F5F6F8", "claudeCode"),
+  task("integration_cursor", "Cursor", "#A8B2C1", "cursor"),
+  task("integration_cursor_wsl", "WSL Cursor", "#6B7C93", "cursor"),
   task("integration_n8n", "n8n", "#F29B38", "n8n"),
 ];
 

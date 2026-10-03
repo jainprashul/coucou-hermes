@@ -85,6 +85,8 @@ export function buildOverview(actions: ViewActions): ViewHost {
             ? "Hermes Gateway"
             : task.source === "claudeCode"
             ? "Claude Code"
+            : task.source === "cursor"
+            ? "Cursor"
             : "Sous-agent";
         who.append(
           dot(task.color, 7),

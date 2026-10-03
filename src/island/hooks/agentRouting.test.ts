@@ -3,6 +3,8 @@ import { State } from "../../core/state";
 import {
   CLAUDE_ID,
   HERMES_ID,
+  CURSOR_ID,
+  CURSOR_WSL_ID,
   validateAgent,
   agentColor,
   FALLBACK_COLORS,
@@ -40,6 +42,26 @@ describe("agentRouting", () => {
         source: "hermes",
         isIntegration: true,
       },
+      {
+        id: CURSOR_ID,
+        name: "Cursor",
+        color: "#A8B2C1",
+        state: "idle",
+        stepIndex: 0,
+        steps: [],
+        source: "cursor",
+        isIntegration: true,
+      },
+      {
+        id: CURSOR_WSL_ID,
+        name: "WSL Cursor",
+        color: "#6B7C93",
+        state: "idle",
+        stepIndex: 0,
+        steps: [],
+        source: "cursor",
+        isIntegration: true,
+      },
     ];
   });
 
@@ -50,9 +72,11 @@ describe("agentRouting", () => {
       expect(validateAgent("agent123")).toBe("agent123");
     });
 
-    it("rejects reserved names 'claude' and 'hermes'", () => {
+    it("rejects reserved names 'claude', 'hermes', 'cursor', and 'cursor-wsl'", () => {
       expect(validateAgent("claude")).toBeNull();
       expect(validateAgent("hermes")).toBeNull();
+      expect(validateAgent("cursor")).toBeNull();
+      expect(validateAgent("cursor-wsl")).toBeNull();
     });
 
     it("rejects invalid characters, uppercase, and empty strings", () => {
@@ -151,8 +175,21 @@ describe("agentRouting", () => {
       expect(route.agentId).toBe(HERMES_ID);
       expect(route.isHermes).toBe(true);
       expect(route.isExternalAgent).toBe(false);
+      expect(route.acceptsPipeApproval).toBe(false);
       expect(route.validAgent).toBeNull();
       expect(route.projectName).toBe("Notch Buddy");
+    });
+
+    it("routes coucou_agent=cursor and cursor-wsl to dedicated pills", () => {
+      const win = resolveHookAgentRoute({ coucou_agent: "cursor", cwd: "D:\\repo" });
+      expect(win.agentId).toBe(CURSOR_ID);
+      expect(win.acceptsPipeApproval).toBe(true);
+      expect(win.isExternalAgent).toBe(false);
+
+      const wsl = resolveHookAgentRoute({ coucou_agent: "cursor-wsl", cwd: "/home/dev/repo" });
+      expect(wsl.agentId).toBe(CURSOR_WSL_ID);
+      expect(wsl.acceptsPipeApproval).toBe(true);
+      expect(wsl.isExternalAgent).toBe(false);
     });
 
     it("routes valid custom coucou_agent to dynamic external agent pill", () => {
@@ -160,6 +197,7 @@ describe("agentRouting", () => {
       expect(route.agentId).toBe("agent_reviewer-bot");
       expect(route.isHermes).toBe(false);
       expect(route.isExternalAgent).toBe(true);
+      expect(route.acceptsPipeApproval).toBe(false);
       expect(route.validAgent).toBe("reviewer-bot");
       expect(route.projectName).toBe("Session");
     });
@@ -169,6 +207,7 @@ describe("agentRouting", () => {
       expect(route.agentId).toBe(CLAUDE_ID);
       expect(route.isHermes).toBe(false);
       expect(route.isExternalAgent).toBe(false);
+      expect(route.acceptsPipeApproval).toBe(true);
       expect(route.validAgent).toBeNull();
     });
   });
@@ -202,6 +241,11 @@ describe("agentRouting", () => {
       clearSession(HERMES_ID, State);
       const hermes = State.tasks.find((t) => t.id === HERMES_ID)!;
       expect(hermes.name).toBe("Hermes Agent");
+
+      clearSession(CURSOR_ID, State);
+      expect(State.tasks.find((t) => t.id === CURSOR_ID)!.name).toBe("Cursor");
+      clearSession(CURSOR_WSL_ID, State);
+      expect(State.tasks.find((t) => t.id === CURSOR_WSL_ID)!.name).toBe("WSL Cursor");
     });
   });
 

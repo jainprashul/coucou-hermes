@@ -49,12 +49,15 @@ describe("target URL resolution", () => {
 });
 
 describe("openTaskTarget", () => {
+  const openBridge = () => ({
+    openInVSCode: vi.fn(),
+    openInCursor: vi.fn(),
+    openN8n: vi.fn(),
+    openUrl: vi.fn(),
+  });
+
   it("does nothing when task is null", () => {
-    const bridge = {
-      openInVSCode: vi.fn(),
-      openN8n: vi.fn(),
-      openUrl: vi.fn(),
-    };
+    const bridge = openBridge();
     openTaskTarget(null, bridge);
     expect(bridge.openInVSCode).not.toHaveBeenCalled();
     expect(bridge.openN8n).not.toHaveBeenCalled();
@@ -62,11 +65,7 @@ describe("openTaskTarget", () => {
   });
 
   it("opens VS Code with session cwd for Claude integration", () => {
-    const bridge = {
-      openInVSCode: vi.fn(),
-      openN8n: vi.fn(),
-      openUrl: vi.fn(),
-    };
+    const bridge = openBridge();
     const task = mockTask({
       id: "integration_claude",
       name: "Claude",
@@ -78,11 +77,7 @@ describe("openTaskTarget", () => {
   });
 
   it("opens VS Code with null if Claude task has no sessionCwd", () => {
-    const bridge = {
-      openInVSCode: vi.fn(),
-      openN8n: vi.fn(),
-      openUrl: vi.fn(),
-    };
+    const bridge = openBridge();
     const task = mockTask({
       id: "integration_claude",
       name: "Claude",
@@ -92,12 +87,33 @@ describe("openTaskTarget", () => {
     expect(bridge.openInVSCode).toHaveBeenCalledWith(null);
   });
 
+  it("opens Cursor with session cwd for Cursor integrations", () => {
+    const bridge = openBridge();
+    openTaskTarget(
+      mockTask({
+        id: "integration_cursor",
+        name: "Cursor",
+        source: "cursor",
+        sessionCwd: "C:\\proj",
+      }),
+      bridge,
+    );
+    expect(bridge.openInCursor).toHaveBeenCalledWith("C:\\proj");
+
+    openTaskTarget(
+      mockTask({
+        id: "integration_cursor_wsl",
+        name: "WSL Cursor",
+        source: "cursor",
+        sessionCwd: "/home/dev/repo",
+      }),
+      bridge,
+    );
+    expect(bridge.openInCursor).toHaveBeenCalledWith("/home/dev/repo");
+  });
+
   it("opens n8n for n8n integration", () => {
-    const bridge = {
-      openInVSCode: vi.fn(),
-      openN8n: vi.fn(),
-      openUrl: vi.fn(),
-    };
+    const bridge = openBridge();
     const task = mockTask({
       id: "integration_n8n",
       name: "n8n",
@@ -108,11 +124,7 @@ describe("openTaskTarget", () => {
   });
 
   it("opens URL for configured integration tasks", () => {
-    const bridge = {
-      openInVSCode: vi.fn(),
-      openN8n: vi.fn(),
-      openUrl: vi.fn(),
-    };
+    const bridge = openBridge();
     const task = mockTask({
       id: "integration_github",
       name: "GitHub",
@@ -122,11 +134,7 @@ describe("openTaskTarget", () => {
   });
 
   it("does nothing for task not matching claude, n8n, or known url", () => {
-    const bridge = {
-      openInVSCode: vi.fn(),
-      openN8n: vi.fn(),
-      openUrl: vi.fn(),
-    };
+    const bridge = openBridge();
     const task = mockTask({
       id: "integration_hermes",
       name: "Hermes",
@@ -134,6 +142,7 @@ describe("openTaskTarget", () => {
     });
     openTaskTarget(task, bridge);
     expect(bridge.openInVSCode).not.toHaveBeenCalled();
+    expect(bridge.openInCursor).not.toHaveBeenCalled();
     expect(bridge.openN8n).not.toHaveBeenCalled();
     expect(bridge.openUrl).not.toHaveBeenCalled();
   });

@@ -1,6 +1,7 @@
 // Coucou for Windows — app wiring and the commands the island calls.
 
 mod claude;
+mod cursor_hooks;
 mod events;
 mod files;
 mod hermes_api;
@@ -31,6 +32,7 @@ use claude::{Chat, ChatContext, ChatReply};
 use files::DroppedFile;
 use hermes_api::HermesChatSession;
 use hermes_ws::{ConnectionStatus, HermesClientState};
+use cursor_hooks::{CursorHookPreview, CursorHookStatus};
 use hooks::{HookPreview, HookStatus};
 use island::{PollGate, ScreenInfo};
 use pipe::Pending;
@@ -149,20 +151,70 @@ fn open_url(url: String) {
 /// and falls back to Explorer otherwise.
 #[tauri::command]
 fn open_in_vscode(path: Option<String>) -> bool {
+    open_in_editor("code", path.as_deref())
+}
+
+/// Opens a folder in Cursor when `cursor` is on PATH.
+/// Linux-style paths (Remote-WSL session cwd) are converted with `wslpath -w`
+/// before launch; if that fails we try `cursor --remote wsl+default <path>`.
+#[tauri::command]
+fn open_in_cursor(path: Option<String>) -> bool {
+    let resolved = path.as_deref().filter(|p| !p.is_empty()).map(|p| {
+        if looks_like_unix_path(p) {
+            wsl_to_windows_path(p).unwrap_or_else(|| p.to_string())
+        } else {
+            p.to_string()
+        }
+    });
+    if open_in_editor("cursor", resolved.as_deref()) {
+        return true;
+    }
+    // Last resort for Remote-WSL: let Cursor open the UNIX path remotely.
+    if let (Some(cursor), Some(unix)) = (
+        find_on_path("cursor"),
+        path.as_deref().filter(|p| !p.is_empty()).filter(|p| looks_like_unix_path(p)),
+    ) {
+        let mut cmd = Command::new(cursor);
+        cmd.args(["--remote", "wsl+default", unix]);
+        if cmd.creation_flags(CREATE_NO_WINDOW).spawn().is_ok() {
+            return true;
+        }
+    }
+    false
+}
+
+fn looks_like_unix_path(p: &str) -> bool {
+    p.starts_with('/') && !p.starts_with("//")
+}
+
+fn wsl_to_windows_path(unix: &str) -> Option<String> {
+    let output = Command::new("wsl.exe")
+        .args(["-e", "wslpath", "-w", unix])
+        .creation_flags(CREATE_NO_WINDOW)
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let s = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    (!s.is_empty()).then_some(s)
+}
+
+fn open_in_editor(stem: &str, path: Option<&str>) -> bool {
     // No `cmd /C` anywhere near this. The path is a project folder chosen by
-    // whoever is using Claude Code, and cmd would happily read `&`, `^` and `%`
+    // whoever is using the agent, and cmd would happily read `&`, `^` and `%`
     // in a folder name as syntax. Finding the launcher ourselves and handing the
     // path over as a separate argument keeps it a path.
-    if let Some(code) = find_on_path("code") {
-        let mut cmd = Command::new(code);
-        if let Some(p) = path.as_deref().filter(|p| !p.is_empty()) {
+    if let Some(bin) = find_on_path(stem) {
+        let mut cmd = Command::new(bin);
+        if let Some(p) = path.filter(|p| !p.is_empty()) {
             cmd.arg(p);
         }
         if cmd.creation_flags(CREATE_NO_WINDOW).spawn().is_ok() {
             return true;
         }
     }
-    if let Some(p) = path.as_deref().filter(|p| !p.is_empty()) {
+    if let Some(p) = path.filter(|p| !p.is_empty()) {
         let _ = Command::new("explorer").arg(p).spawn();
     }
     false
@@ -229,6 +281,23 @@ fn hooks_apply(
     };
     let _ = app.emit(events::SETTINGS_CHANGED, updated);
     Ok(backup)
+}
+
+// ── Cursor hooks (Windows + Remote-WSL) ───────────────────────────────────────
+
+#[tauri::command]
+fn cursor_hooks_status() -> CursorHookStatus {
+    cursor_hooks::status()
+}
+
+#[tauri::command]
+fn cursor_hooks_preview(target: String, install: bool) -> Result<CursorHookPreview, String> {
+    cursor_hooks::preview(&target, install)
+}
+
+#[tauri::command]
+fn cursor_hooks_apply(target: String, install: bool, fingerprint: String) -> Result<String, String> {
+    cursor_hooks::write(&target, install, &fingerprint)
 }
 
 #[tauri::command]
@@ -472,10 +541,14 @@ pub fn run() {
             reposition,
             open_url,
             open_in_vscode,
+            open_in_cursor,
             quit_app,
             hooks_status,
             hooks_preview,
             hooks_apply,
+            cursor_hooks_status,
+            cursor_hooks_preview,
+            cursor_hooks_apply,
             approval_decision,
             approval_ack,
             approval_decline,

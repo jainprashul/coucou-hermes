@@ -14,6 +14,7 @@ import {
 import {
   apiSection,
   claudeSection,
+  cursorSection,
   generalSection,
   hermesSection,
   integrationsSection,
@@ -30,6 +31,12 @@ async function main() {
     hookPath: "",
     hookReady: false,
   };
+  const cursorStatus = (await Bridge.cursorHooksStatus()) ?? {
+    windows: { available: true, installed: false, settingsPath: "", detail: null },
+    wsl: { available: false, installed: false, settingsPath: "", detail: "WSL status unknown" },
+    hookPath: "",
+    hookReady: false,
+  };
 
   const secrets = await loadInitialSecrets();
 
@@ -38,6 +45,7 @@ async function main() {
     settingsHeader(getVersion()),
     hermesSection(secrets.hasHermesAuthPass, secrets.hasHermesApiKey, secrets.hasHermesWebhookSecret),
     claudeSection(status),
+    cursorSection(cursorStatus),
     apiSection(secrets.hasAnthropicKey),
     integrationsSection(secrets.integrationSecrets),
     generalSection(),

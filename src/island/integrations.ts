@@ -31,6 +31,22 @@ export async function refreshConfigured() {
     data: {}, error: null, loaded: false, configured: false,
   };
   State.integrations.integration_claude = { ...claude, configured: hooks };
+
+  const cursorStatus = await Bridge.cursorHooksStatus();
+  const cursor = State.integrations.integration_cursor ?? {
+    data: {}, error: null, loaded: false, configured: false,
+  };
+  const cursorWsl = State.integrations.integration_cursor_wsl ?? {
+    data: {}, error: null, loaded: false, configured: false,
+  };
+  State.integrations.integration_cursor = {
+    ...cursor,
+    configured: cursorStatus?.windows.installed ?? false,
+  };
+  State.integrations.integration_cursor_wsl = {
+    ...cursorWsl,
+    configured: cursorStatus?.wsl.installed ?? false,
+  };
   State.notify();
 }
 

@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { State } from "../../core/state";
-import { CLAUDE_ID, HERMES_ID } from "./agentRouting";
+import { CLAUDE_ID, CURSOR_ID, CURSOR_WSL_ID, HERMES_ID } from "./agentRouting";
 import {
   handleHookEvent,
   surfaceHookView,
@@ -83,6 +83,26 @@ describe("hookEvents", () => {
         stepIndex: 0,
         steps: [],
         source: "hermes",
+        isIntegration: true,
+      },
+      {
+        id: CURSOR_ID,
+        name: "Cursor",
+        color: "#A8B2C1",
+        state: "idle",
+        stepIndex: 0,
+        steps: [],
+        source: "cursor",
+        isIntegration: true,
+      },
+      {
+        id: CURSOR_WSL_ID,
+        name: "WSL Cursor",
+        color: "#6B7C93",
+        state: "idle",
+        stepIndex: 0,
+        steps: [],
+        source: "cursor",
         isIntegration: true,
       },
     ];
@@ -388,6 +408,42 @@ describe("hookEvents", () => {
       expect(task.pillBadge).toBe("approval");
       expect(host.revealed).toBe(true);
       expect(host.alertedViews).toHaveLength(0);
+    });
+
+    it("acks Cursor and WSL Cursor pipe permission requests on their pills", () => {
+      State.focusId = CURSOR_ID;
+      handleHookEvent(
+        host,
+        {
+          hook_event_name: "PermissionRequest",
+          request_id: "req-cursor",
+          coucou_agent: "cursor",
+          tool_name: "Shell",
+          tool_input: { command: "npm test" },
+          cwd: "D:\\repo",
+        },
+        getOptions(),
+      );
+      expect(mockBridge.approvalAck).toHaveBeenCalledWith("req-cursor");
+      expect(State.pendingApproval?.requestId).toBe("req-cursor");
+      expect(State.tasks.find((t) => t.id === CURSOR_ID)!.state).toBe("approval");
+
+      State.pendingApproval = null;
+      State.focusId = CURSOR_WSL_ID;
+      handleHookEvent(
+        host,
+        {
+          hook_event_name: "PermissionRequest",
+          request_id: "req-wsl",
+          coucou_agent: "cursor-wsl",
+          tool_name: "Shell",
+          tool_input: { command: "ls" },
+          cwd: "/home/dev/repo",
+        },
+        getOptions(),
+      );
+      expect(mockBridge.approvalAck).toHaveBeenCalledWith("req-wsl");
+      expect(State.tasks.find((t) => t.id === CURSOR_WSL_ID)!.state).toBe("approval");
     });
 
     it("clears pending approval timeout with clearPendingApprovalTimeout helper", () => {

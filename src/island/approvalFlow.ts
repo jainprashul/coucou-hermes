@@ -9,6 +9,8 @@ import type { ApprovalInfo } from "../core/types";
 
 export const HERMES_AGENT_ID = "integration_hermes";
 export const CLAUDE_AGENT_ID = "integration_claude";
+export const CURSOR_AGENT_ID = "integration_cursor";
+export const CURSOR_WSL_AGENT_ID = "integration_cursor_wsl";
 export const HERMES_ID = HERMES_AGENT_ID;
 
 export type ApprovalDecision = "once" | "always" | "deny";

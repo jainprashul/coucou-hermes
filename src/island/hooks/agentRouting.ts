@@ -1,11 +1,16 @@
 // Hook payload routing and agent mapping helpers.
-// Maps Claude Code / Coucou hook payloads to island task identifiers and session state.
+// Maps Claude Code / Cursor / Coucou hook payloads to island task identifiers and session state.
 
 import { State } from "../../core/state";
 import { toolLabel } from "../toolLabels";
 
 export const CLAUDE_ID = "integration_claude";
 export const HERMES_ID = "integration_hermes";
+export const CURSOR_ID = "integration_cursor";
+export const CURSOR_WSL_ID = "integration_cursor_wsl";
+
+/** Built-in pills that own Coucou named-pipe permission decisions. */
+export const PIPE_APPROVAL_AGENT_IDS = new Set([CLAUDE_ID, CURSOR_ID, CURSOR_WSL_ID]);
 
 export interface HookPayload {
   hook_event_name?: string;
@@ -25,14 +30,25 @@ export interface HookAgentRoute {
   agentId: string;
   isHermes: boolean;
   isExternalAgent: boolean;
+  /** True when this agent can show an island approval card over the named pipe. */
+  acceptsPipeApproval: boolean;
   validAgent: string | null;
   projectName: string;
   cwd: string;
 }
 
-/** Same rule as HookServer.validateAgent on macOS. "claude"/"hermes" are reserved. */
+/** Same rule as HookServer.validateAgent on macOS. Reserved names cannot be dynamic pills. */
 export function validateAgent(raw: string | undefined): string | null {
-  if (!raw || raw.length > 24 || raw === "claude" || raw === "hermes") return null;
+  if (
+    !raw ||
+    raw.length > 24 ||
+    raw === "claude" ||
+    raw === "hermes" ||
+    raw === "cursor" ||
+    raw === "cursor-wsl"
+  ) {
+    return null;
+  }
   if (!/^[a-z0-9-]+$/.test(raw)) return null;
   return raw;
 }
@@ -87,7 +103,7 @@ export function stepLabel(tool: string, input: Record<string, unknown>): string 
  * whatever identifying string it carries instead of falling back to its name.
  */
 export const APPROVAL_FIELDS = [
-  "command", // Bash, PowerShell
+  "command", // Bash, PowerShell, Shell
   "file_path", // Write, Edit, MultiEdit, NotebookEdit
   "path", // Read, LS
   "url", // WebFetch
@@ -106,6 +122,21 @@ export function approvalTarget(tool: string, input: Record<string, unknown>): st
   return tool;
 }
 
+function idleNameFor(agentId: string): string {
+  switch (agentId) {
+    case HERMES_ID:
+      return "Hermes Agent";
+    case CURSOR_ID:
+      return "Cursor";
+    case CURSOR_WSL_ID:
+      return "WSL Cursor";
+    case CLAUDE_ID:
+      return "VS Code";
+    default:
+      return "Session";
+  }
+}
+
 export function resolveHookAgentRoute(payload: HookPayload): HookAgentRoute {
   const cwd = payload.cwd ?? "";
   const raw = lastPathComponent(cwd);
@@ -113,17 +144,32 @@ export function resolveHookAgentRoute(payload: HookPayload): HookAgentRoute {
 
   // Route to the right pill.
   // coucou_agent=hermes → Hermes Agent pill (outbound webhooks / --agent hermes).
+  // coucou_agent=cursor → Cursor (Windows) pill.
+  // coucou_agent=cursor-wsl → Remote-WSL Cursor pill.
   // Valid other agent → dynamic "agent_<name>" pill.
   // Absent or invalid → Claude Code pill.
-  const isHermes = payload.coucou_agent === "hermes";
-  const validAgent = isHermes ? null : validateAgent(payload.coucou_agent);
-  const agentId = isHermes ? HERMES_ID : validAgent ? `agent_${validAgent}` : CLAUDE_ID;
+  const tag = payload.coucou_agent;
+  const isHermes = tag === "hermes";
+  let agentId = CLAUDE_ID;
+  if (isHermes) {
+    agentId = HERMES_ID;
+  } else if (tag === "cursor") {
+    agentId = CURSOR_ID;
+  } else if (tag === "cursor-wsl") {
+    agentId = CURSOR_WSL_ID;
+  } else {
+    const valid = validateAgent(tag);
+    if (valid) agentId = `agent_${valid}`;
+  }
+  const validAgent = agentId.startsWith("agent_") ? agentId.slice("agent_".length) : null;
   const isExternalAgent = validAgent !== null;
+  const acceptsPipeApproval = PIPE_APPROVAL_AGENT_IDS.has(agentId);
 
   return {
     agentId,
     isHermes,
     isExternalAgent,
+    acceptsPipeApproval,
     validAgent,
     projectName,
     cwd,
@@ -140,6 +186,8 @@ export function upsertSession(
   if (!t) return;
   if (agentId === HERMES_ID) {
     t.name = projectName && projectName !== "Session" ? projectName : "Hermes Agent";
+  } else if (agentId === CURSOR_ID || agentId === CURSOR_WSL_ID) {
+    t.name = projectName && projectName !== "Session" ? projectName : idleNameFor(agentId);
   } else {
     t.name = projectName;
   }
@@ -151,11 +199,11 @@ export function clearSession(agentId: string = CLAUDE_ID, state = State): void {
   if (!t) return;
   t.steps = [];
   t.stepIndex = 0;
-  t.name = agentId === HERMES_ID ? "Hermes Agent" : "VS Code";
+  t.name = idleNameFor(agentId);
   t.pillBadge = null;
 }
 
-/** Ensure the agent pill exists (no-op for Claude / Hermes built-ins). */
+/** Ensure the agent pill exists (no-op for Claude / Hermes / Cursor built-ins). */
 export function ensureAgentPill(route: HookAgentRoute, state = State): void {
   if (route.isExternalAgent) {
     state.upsertExternalAgent(route.agentId, route.validAgent!, agentColor(route.validAgent!));
