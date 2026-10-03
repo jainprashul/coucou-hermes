@@ -6,7 +6,7 @@ import { h, svg, clear, dot } from "./dom";
 import { ICONS } from "./icons";
 import { State } from "../core/state";
 import type { IslandViewName } from "../core/layout";
-import { card, buildPlaceholder } from "./common";
+import { card } from "./common";
 import type { ViewActions, ViewHost } from "./types";
 import { buildOverview } from "./overview";
 import { buildEmpty } from "./empty";
@@ -114,9 +114,5 @@ export function buildViews(
   map.set("upload", buildUpload());
   map.set("uploading", buildUploading());
   map.set("choose", buildChoose(actions));
-  // Not in the Windows v1: sending a file by email, window attach + web result.
-  map.set("mail", buildPlaceholder("Sending by email isn't in this version.", ""));
-  map.set("searching", buildPlaceholder("Claude is searching…", ""));
-  map.set("result", buildPlaceholder("Result", ""));
   return map;
 }

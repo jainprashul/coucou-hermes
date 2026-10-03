@@ -15,8 +15,6 @@ export interface Tween {
   onComplete?: () => void;
 }
 
-export type TweenTarget = Record<PropKey, number>;
-
 /** Creates a new Tween tracking the progression across keyframes. */
 export function createTween(
   prop: PropKey,

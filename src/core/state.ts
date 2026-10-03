@@ -17,8 +17,6 @@ import {
   type IntegrationInfo,
   type PillBadge,
   type PromptContext,
-  type ResultItem,
-  type SearchResult,
   type Settings,
 } from "./types";
 
@@ -34,8 +32,6 @@ export type {
   IntegrationInfo,
   PillBadge,
   PromptContext,
-  ResultItem,
-  SearchResult,
   Settings,
 };
 export { DEFAULT_SETTINGS };
@@ -70,7 +66,6 @@ class AppState {
   promptContext: PromptContext | null = null;
   droppedFile: { name: string; path: string } | null = null;
   noteMessage: string | null = null;
-  searchResult: SearchResult | null = null;
   chatHistory: ChatMessage[] = [];
   pendingApproval: ApprovalInfo | null = null;
   pendingClarify: ClarifyInfo | null = null;
@@ -128,10 +123,6 @@ class AppState {
       this._taskIndexDirty = false;
     }
     return this._taskIndex.get(id) ?? null;
-  }
-
-  getTask(id: string | null | undefined): AgentTask | null {
-    return this.findTask(id);
   }
 
   get focusTask(): AgentTask | null {
