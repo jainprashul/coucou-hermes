@@ -202,61 +202,10 @@ export function handleTurnError(
   surfaceView(host, "error", true, state);
 }
 
-export function handleHermesApproval(
-  host: HermesSurfaceHost,
-  payload: HermesApprovalEvent,
-  state = State,
-  bridge = Bridge,
-  sound = Sound,
-): void {
-  if (state.paused) {
-    void bridge.hermesDecide(payload.requestId, "deny");
-    return;
-  }
+import { handleHermesApproval } from "../approvalFlow";
+import { handleHermesClarify } from "../clarifyFlow";
 
-  state.pendingApproval = {
-    requestId: payload.requestId,
-    sessionId: payload.sessionId,
-    tool: payload.toolName || "Tool",
-    command: payload.command || payload.description || "Commande à confirmer",
-    description: payload.description,
-    choices: payload.choices,
-  };
-
-  state.updateTask(HERMES_ID, "approval");
-  state.isPinned = true;
-  sound.play("approval");
-
-  surfaceView(host, "approval", true, state);
-  state.notify();
-}
-
-export function handleHermesClarify(
-  host: HermesSurfaceHost,
-  payload: HermesClarifyEvent,
-  state = State,
-  bridge = Bridge,
-  sound = Sound,
-): void {
-  if (state.paused) {
-    void bridge.hermesClarifyAnswer(payload.requestId, {});
-    return;
-  }
-
-  state.pendingClarify = {
-    requestId: payload.requestId,
-    sessionId: payload.sessionId,
-    questions: payload.questions,
-  };
-
-  state.updateTask(HERMES_ID, "question");
-  state.isPinned = true;
-  sound.play("question");
-
-  // In views, clarify maps to the question view
-  surfaceView(host, "question", true, state);
-  state.notify();
-}
+export { handleHermesApproval, handleHermesClarify };
 
 const defaultUnknownLogger = createUnknownEventLogger();
 

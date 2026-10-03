@@ -105,57 +105,17 @@ export function updateAutoCloseInterval(
   state.notify();
 }
 
-export interface ApprovalDecisionHost {
-  setView(view: IslandViewName): void;
-  setPinned(pinned: boolean): void;
-}
+import {
+  executeApprovalDecision,
+  type ApprovalDecisionHost,
+  type ApprovalDecisionDeps,
+} from "./approvalFlow";
 
-export interface ApprovalDecisionDeps {
-  bridge: Pick<typeof Bridge, "log" | "approvalDecision" | "hermesDecide">;
-  sound: Pick<typeof Sound, "play">;
-  state: Pick<
-    typeof State,
-    "pendingApproval" | "tasks" | "isPinned" | "updateTask" | "setPillBadge" | "defaultView"
-  >;
-}
-
-/**
- * Executes user decision on pending approval request.
- * Dispatches allow/deny to Claude or once/always/deny to Hermes.
- */
-export function executeApprovalDecision(
-  decision: "once" | "always" | "deny",
-  host: ApprovalDecisionHost,
-  deps: ApprovalDecisionDeps = {
-    bridge: Bridge,
-    sound: Sound,
-    state: State,
-  },
-): void {
-  const req = deps.state.pendingApproval;
-  void deps.bridge.log(`decide ${decision} req=${req?.requestId ?? "none"}`);
-  if (!req) return;
-  deps.sound.play(decision === "deny" ? "blip" : "approve");
-
-  // Send exactly one decision. Claude hook approvals only understand allow|deny.
-  const claudePending = deps.state.tasks.some(
-    (t) => t.id === "integration_claude" && t.state === "approval",
-  );
-  if (claudePending) {
-    void deps.bridge.approvalDecision(req.requestId, decision === "deny" ? "deny" : "allow");
-  } else {
-    void deps.bridge.hermesDecide(req.requestId, decision);
-  }
-
-  deps.state.pendingApproval = null;
-  deps.state.isPinned = false;
-  host.setPinned(false);
-  deps.state.updateTask("integration_hermes", "working");
-  deps.state.setPillBadge("integration_hermes", null);
-  deps.state.updateTask("integration_claude", "working");
-  deps.state.setPillBadge("integration_claude", null);
-  host.setView(deps.state.defaultView());
-}
+export {
+  executeApprovalDecision,
+  type ApprovalDecisionHost,
+  type ApprovalDecisionDeps,
+};
 
 export interface CreateViewActionsDeps {
   bridge?: typeof Bridge;

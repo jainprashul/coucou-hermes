@@ -5,7 +5,12 @@
 import { h, svg, clear, dot } from "./dom";
 import { ICONS } from "./icons";
 import { Ticker } from "./ticker";
-import { Bridge } from "../core/bridge";
+import { formatApprovalCommand, formatApprovalDescription } from "../island/approvalFlow";
+import {
+  getActiveClarifyQuestion,
+  getClarifyFallbackTitle,
+  submitClarifyQuestionAnswer,
+} from "../island/clarifyFlow";
 import { State, type AgentTask } from "../core/state";
 import { washRGBA, type IslandViewName, type Wash } from "../core/layout";
 import { createMiniBot, pruneMiniBots } from "../mochi/minibots";
@@ -321,8 +326,8 @@ function buildApproval(actions: ViewActions): ViewHost {
       clear(who);
       who.append(agentWho(State.focusTask, "demande d'autorisation"));
       const approval = State.pendingApproval;
-      desc.textContent = approval?.description || (approval?.tool ? `Tool: ${approval.tool}` : "Confirmation requise");
-      code.textContent = approval?.command || approval?.tool || "…";
+      desc.textContent = formatApprovalDescription(approval);
+      code.textContent = formatApprovalCommand(approval);
       clear(row);
       row.append(
         btn("Refuser", "secondary", () => actions.decide("deny"), "N"),
@@ -346,20 +351,15 @@ function buildQuestion(actions: ViewActions): ViewHost {
       clear(who);
       who.append(agentWho(State.focusTask, "Clarification Hermes"));
       const clarify = State.pendingClarify;
-      if (clarify && clarify.questions.length > 0) {
-        const q = clarify.questions[0];
+      const q = getActiveClarifyQuestion(clarify);
+      if (clarify && q) {
         title.textContent = q.question;
         clear(row);
         if (q.choices && q.choices.length > 0) {
           for (const choice of q.choices) {
             row.append(
               btn(choice, "secondary", () => {
-                actions.blip();
-                void Bridge.hermesClarifyAnswer(clarify.requestId, { [q.qid]: choice });
-                State.pendingClarify = null;
-                State.isPinned = false;
-                State.updateTask("integration_hermes", "working");
-                actions.setView(State.defaultView());
+                submitClarifyQuestionAnswer(clarify.requestId, q.qid, choice, actions);
               })
             );
           }
@@ -370,20 +370,12 @@ function buildQuestion(actions: ViewActions): ViewHost {
             style: "flex:1;min-width:180px;padding:6px 10px;background:#1e1e24;border:1px solid #3e3e48;color:#fff;border-radius:8px",
           }) as HTMLInputElement;
           const sendBtn = btn("Envoyer", "primary", () => {
-            const val = input.value.trim();
-            if (!val) return;
-            actions.blip();
-            void Bridge.hermesClarifyAnswer(clarify.requestId, { [q.qid]: val });
-            State.pendingClarify = null;
-            State.isPinned = false;
-            State.updateTask("integration_hermes", "working");
-            actions.setView(State.defaultView());
+            submitClarifyQuestionAnswer(clarify.requestId, q.qid, input.value, actions);
           });
           row.append(input, sendBtn);
         }
       } else {
-        const task = State.focusTask;
-        title.textContent = task?.steps.at(-1) ?? "Hermes attend une réponse.";
+        title.textContent = getClarifyFallbackTitle(State.focusTask);
         clear(row);
         row.append(h("div", { class: "sub", text: "Répondez dans le terminal ou le chat." }));
       }
